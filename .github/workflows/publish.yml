@@ -1,9 +1,17 @@
 name: Publish to npm
 
-# Publishes the package to npm when a version tag (v*) is pushed.
-# Requires a repo secret NPM_TOKEN — an npm "Automation" or granular publish
-# token for the dsh-chrome package. The workflow runs on GitHub-hosted runners;
-# no self-hosted runner is needed.
+# Publishes the package to npm when a version tag (v*) is pushed, using npm
+# Trusted Publishing (OIDC) — no NPM_TOKEN secret. Authentication is a
+# short-lived OIDC token minted by GitHub Actions and verified by npm.
+#
+# One-time setup on npmjs.com (Package settings -> Trusted Publishing):
+#   Organization or user: stuarthu
+#   Repository:           dsh-chrome
+#   Workflow filename:    publish.yml
+#   Allowed actions:      npm publish
+# Note: OIDC cannot perform a package's FIRST publish — the package must already
+# exist. Bootstrap the first version with a traditional token/OTP publish, then
+# every later `git push origin vX.Y.Z` publishes here with provenance.
 
 on:
   push:
@@ -15,14 +23,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # enables npm provenance
+      id-token: write # required for OIDC trusted publishing (and provenance)
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24" # Trusted publishing needs Node >= 22.14.0
           registry-url: "https://registry.npmjs.org"
+
+      # Trusted publishing needs npm >= 11.5.1; ensure a recent CLI regardless
+      # of the Node image's bundled version.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
 
       # No build step: the package ships source directly. Guard that the tag
       # matches package.json's version so a mistagged push fails loudly.
@@ -34,7 +47,6 @@ jobs:
             exit 1
           fi
 
+      # No NODE_AUTH_TOKEN: the npm CLI auto-detects the OIDC credential.
       - name: Publish
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
