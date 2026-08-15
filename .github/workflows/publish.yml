@@ -1,0 +1,40 @@
+name: Publish to npm
+
+# Publishes the package to npm when a version tag (v*) is pushed.
+# Requires a repo secret NPM_TOKEN — an npm "Automation" or granular publish
+# token for the dsh-chrome package. The workflow runs on GitHub-hosted runners;
+# no self-hosted runner is needed.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # enables npm provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      # No build step: the package ships source directly. Guard that the tag
+      # matches package.json's version so a mistagged push fails loudly.
+      - name: Verify tag matches package version
+        run: |
+          PKG_VERSION="v$(node -p "require('./package.json').version")"
+          if [ "$PKG_VERSION" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package version ${PKG_VERSION}" >&2
+            exit 1
+          fi
+
+      - name: Publish
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

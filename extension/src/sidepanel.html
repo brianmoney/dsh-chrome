@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>dsh-agent</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header id="bar">
+      <span id="title">dsh-agent</span>
+      <span id="status" data-kind=""></span>
+      <button id="stopCapture" title="手动停止当前标签页的 HTTP 抓包">停止抓包</button>
+      <button id="settings" title="修改 dsh 网页界面地址">设置</button>
+    </header>
+    <iframe id="dshFrame" src="about:blank" allow="clipboard-read; clipboard-write"></iframe>
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

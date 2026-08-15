@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>dsh-agent 设置</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <h1>dsh-agent 设置</h1>
+    <label for="dshUrl">dsh 网页界面地址</label>
+    <input id="dshUrl" type="text" placeholder="http://127.0.0.1:3080" />
+    <button id="save">保存</button>
+    <span id="saved"></span>
+    <p class="hint">
+      运行中的 <code>dsh web</code> 地址。侧栏从该地址嵌入完整界面，浏览器桥接连接到
+      <code>ws://该主机/dsh-agent/bridge</code>。如果你把 dsh 跑在别的端口，
+      或从局域网内另一台机器访问，改这里即可。
+    </p>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

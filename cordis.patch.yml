@@ -1,0 +1,24 @@
+# dsh-chrome bundle patch — mounts the three host-side plugins that back the
+# Chrome extension. Applied when this package is listed in a dsh profile's
+# `dsh.profile.bundles` (i.e. after `dsh plugin --profile web add dsh-chrome`).
+#
+# The three rows are addressed by id so a user's own cordis.patch.yml can
+# override or disable any of them. Each `name` is a package subpath resolved
+# from the profile's node_modules (declared in this package's `exports`).
+#
+#   dsh-chrome-bridge          WebSocket bridge to the browser extension
+#                              (route /dsh-agent/bridge; provides dshAgentBridge)
+#   dsh-chrome-browser-tools   registers the browser_* agent tools
+#   dsh-chrome-page-injector   injects the "current page" into the active session
+- insert:
+    - id: dsh-chrome-bridge
+      name: 'dsh-chrome/host/bridge.js'
+
+    - id: dsh-chrome-browser-tools
+      name: 'dsh-chrome/host/browser-tools.js'
+      # config:
+      #   redactCredentials: true   # default; set false to capture raw traffic
+      #   (see host/browser-tools.js). Trusted, local debugging only.
+
+    - id: dsh-chrome-page-injector
+      name: 'dsh-chrome/host/page-injector.js'

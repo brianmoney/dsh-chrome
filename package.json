@@ -1,0 +1,69 @@
+{
+  "name": "dsh-chrome",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "DeepSeek Harness (dsh) browser companion: a Chrome side panel that embeds the full dsh web UI and lets the dsh agent read the current page, capture HTTP traffic, and drive the browser.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "deepseek-harness-plugin",
+    "chrome",
+    "chrome-extension",
+    "browser",
+    "browser-agent",
+    "browser-automation"
+  ],
+  "license": "MIT",
+  "author": "Stuart Hu",
+  "homepage": "https://github.com/stuarthu/dsh-chrome#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stuarthu/dsh-chrome.git"
+  },
+  "bugs": {
+    "url": "https://github.com/stuarthu/dsh-chrome/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "dsh-chrome": "bin/cli.js"
+  },
+  "exports": {
+    "./host/bridge.js": "./host/bridge.js",
+    "./host/browser-tools.js": "./host/browser-tools.js",
+    "./host/page-injector.js": "./host/page-injector.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "host",
+    "extension",
+    "bin",
+    "cordis.patch.yml",
+    "docs",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-llm": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    }
+  }
+}
