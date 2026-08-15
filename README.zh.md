@@ -91,6 +91,13 @@ npx dsh-chrome install
 - 所有浏览器工具（含抓包）只作用于**当前活动标签页**。
 - 抓包记录滚动保留最近 500 条；单条请求/响应体与页面正文同为 1MB 保护阀。
 - 页面变化判定：标签切换 / 主框架导航，防抖约 2 秒；滚动不触发。
+- **读取 `chrome-extension://` 页面**（例如其它扩展的设置页）：`chrome.scripting`
+  与 `chrome.debugger` 都无法跨扩展访问（都会抛「Cannot access a
+  chrome-extension:// URL of different extension」），因此普通注入失败时，
+  worker 会回退到浏览器的**远程调试协议**（`http://127.0.0.1:9222`）。这要求
+  浏览器以 `--remote-debugging-port=9222` 启动（若远程端点做 Origin 校验，
+  还需 `--remote-allow-origins=chrome-extension://<本扩展ID>`）。当 CDP 端点
+  不可用时，回退仅返回 `null`，普通页面读取不受影响。
 
 ## 许可证
 

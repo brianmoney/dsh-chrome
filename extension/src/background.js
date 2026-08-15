@@ -198,7 +198,82 @@ async function needActiveTab() {
   return id;
 }
 
+// ---- 远程 CDP 回退（读取 chrome-extension:// 等无法注入脚本的页面） ----
+// chrome.scripting 与 chrome.debugger 都无法跨扩展访问页面（都会抛
+// “Cannot access a chrome-extension:// URL of different extension”），
+// 唯一通道是浏览器的远程调试协议，因此要求 Helium/Chrome 以
+// `--remote-debugging-port=<CDP_PORT>` 启动。
+const CDP_PORT = 9222;
+
+async function cdpRemoteTargets() {
+  const res = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`);
+  if (!res.ok) {
+    throw new Error(`CDP 端点不可用（HTTP ${res.status}）——浏览器是否以 --remote-debugging-port=${CDP_PORT} 启动？`);
+  }
+  return res.json();
+}
+
+function cdpWsEvaluate(wsUrl, expression, timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    let ws;
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch (e) {
+      return reject(e);
+    }
+    const timer = setTimeout(() => {
+      try { ws.close(); } catch {}
+      reject(new Error("CDP WebSocket 超时"));
+    }, timeoutMs);
+    ws.onopen = () =>
+      ws.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression, returnByValue: true, awaitPromise: true } }));
+    ws.onmessage = (ev) => {
+      let m;
+      try { m = JSON.parse(ev.data); } catch { return; }
+      if (m.id !== 1) return;
+      clearTimeout(timer);
+      try { ws.close(); } catch {}
+      if (m.result && m.result.exceptionDetails) reject(new Error(m.result.exceptionDetails.text || "CDP 求值异常"));
+      else resolve(m.result && m.result.result ? m.result.result.value : null);
+    };
+    ws.onerror = () => { clearTimeout(timer); reject(new Error("CDP WebSocket 连接失败")); };
+  });
+}
+
+async function cdpRemoteEvaluate(tabId, expression) {
+  const tab = await chrome.tabs.get(tabId);
+  if (!tab || !tab.url) throw new Error("无法获取标签页 URL");
+  const targets = await cdpRemoteTargets();
+  const base = tab.url.split("#")[0];
+  const target = targets.find((t) => t.type === "page" && t.url && t.url.split("#")[0] === base)
+    || targets.find((t) => t.type === "page" && t.url && t.url.startsWith(base));
+  if (!target || !target.webSocketDebuggerUrl) throw new Error("未找到该标签页的 CDP 目标");
+  return cdpWsEvaluate(target.webSocketDebuggerUrl, expression);
+}
+
+async function cdpScrapeTab(tabId, textLimit, maxLinks) {
+  const linksExpr = maxLinks
+    ? `[...document.querySelectorAll('a[href]')].slice(0, ${maxLinks}).map(a => ({ text: (a.innerText || '').trim().slice(0, 120), href: a.href }))`
+    : "undefined";
+  const expr = `(() => {
+    const bodyText = document.body ? document.body.innerText : '';
+    return {
+      url: location.href,
+      title: document.title,
+      text: bodyText.slice(0, ${textLimit}),
+      links: ${linksExpr}
+    };
+  })()`;
+  try {
+    const value = await cdpRemoteEvaluate(tabId, expr);
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 // 注入式抓取器：get_page 与页面推送共用。
+// 优先 chrome.scripting 注入；失败（扩展页 / chrome:// / PDF 等）回退 CDP。
 async function scrapeTab(tabId, textLimit, maxLinks) {
   try {
     const [{ result } = {}] = await chrome.scripting.executeScript({
@@ -216,10 +291,11 @@ async function scrapeTab(tabId, textLimit, maxLinks) {
       }),
       args: [textLimit, maxLinks],
     });
-    return result || null;
+    if (result) return result;
   } catch {
-    return null; // chrome:// 页面、PDF 查看器等无法注入脚本
+    // 注入失败 → 交给 CDP 回退
   }
+  return cdpScrapeTab(tabId, textLimit, maxLinks);
 }
 
 // 导航加载跟踪：确认导航真正完成，避免抓到旧页面。
@@ -273,18 +349,35 @@ async function handleAction(msg) {
     }
     case "click": {
       const id = await needActiveTab();
-      const [{ result } = {}] = await chrome.scripting.executeScript({
-        target: { tabId: id },
-        func: (sel) => {
-          const el = document.querySelector(sel);
-          if (!el) return { clicked: false, reason: "没有元素匹配 " + sel };
+      try {
+        const [{ result } = {}] = await chrome.scripting.executeScript({
+          target: { tabId: id },
+          func: (sel) => {
+            const el = document.querySelector(sel);
+            if (!el) return { clicked: false, reason: "没有元素匹配 " + sel };
+            el.click();
+            return { clicked: true, text: (el.innerText || "").trim().slice(0, 120) };
+          },
+          args: [p.selector],
+        });
+        if (result && result.clicked) return sendResult(msg.id, true, result, null);
+        if (result && !result.clicked) return sendResult(msg.id, false, null, result.reason || "点击失败");
+      } catch {
+        // 注入失败（扩展页等）→ 回退 CDP
+      }
+      try {
+        const sel = JSON.stringify(p.selector);
+        const value = await cdpRemoteEvaluate(id, `(() => {
+          const el = document.querySelector(${sel});
+          if (!el) return { clicked: false, reason: "没有元素匹配 " + ${sel} };
           el.click();
           return { clicked: true, text: (el.innerText || "").trim().slice(0, 120) };
-        },
-        args: [p.selector],
-      });
-      if (result && result.clicked) return sendResult(msg.id, true, result, null);
-      return sendResult(msg.id, false, null, (result && result.reason) || "点击失败");
+        })()`);
+        if (value && value.clicked) return sendResult(msg.id, true, value, null);
+        return sendResult(msg.id, false, null, (value && value.reason) || "点击失败");
+      } catch (e) {
+        return sendResult(msg.id, false, null, errMsg(e));
+      }
     }
     case "open_tab": {
       const tab = await chrome.tabs.create({ url: p.url });

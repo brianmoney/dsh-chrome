@@ -109,6 +109,14 @@ agent the ability to read pages, capture traffic, and drive your browser.
   the injected page body share a 1 MB cap.
 - Page-change detection: tab switch / main-frame navigation, ~2 s debounce;
   scrolling does not trigger it.
+- **Reading `chrome-extension://` pages** (e.g. another extension's options page):
+  `chrome.scripting` and `chrome.debugger` are both blocked from cross-extension
+  access, so the worker falls back to the browser's **remote debugging protocol**
+  (`http://127.0.0.1:9222`) when ordinary injection fails. This requires the
+  browser to be launched with `--remote-debugging-port=9222` (and
+  `--remote-allow-origins=chrome-extension://<this-extension-id>` if the remote
+  endpoint enforces the Origin check). When the CDP endpoint is absent, the
+  fallback simply returns `null` and normal pages keep working.
 
 ## License
 
