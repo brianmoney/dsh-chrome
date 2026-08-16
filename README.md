@@ -109,6 +109,10 @@ agent the ability to read pages, capture traffic, and drive your browser.
   the injected page body share a 1 MB cap.
 - Page-change detection: tab switch / main-frame navigation, ~2 s debounce;
   scrolling does not trigger it.
+- **The extension's own side-panel UI is currently Chinese only** (the top-bar
+  labels: bridge status, "stop capture", settings). The embedded dsh web UI
+  follows dsh's own locale; only this thin extension chrome is not yet
+  translated. Planned for a future release.
 - **Reading `chrome-extension://` pages** (e.g. another extension's options page):
   `chrome.scripting` and `chrome.debugger` are both blocked from cross-extension
   access, so the worker falls back to the browser's **remote debugging protocol**
