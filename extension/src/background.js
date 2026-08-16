@@ -197,14 +197,14 @@ async function schedulePagePushFor(tabId) {
 chrome.tabs.onActivated.addListener(() => schedulePagePush());
 // 主框架的真实导航
 chrome.webNavigation.onCommitted.addListener((details) => {
-  if (details.frameId === 0) schedulePagePushFor(details.tabId);
+  if (details.frameId === 0) schedulePagePushFor(details.tabId).catch(() => {});
 });
 // SPA 路由（history.pushState/replaceState）不会触发 onCommitted，
 // 必须单独监听，否则单页应用换“页面”时智能体看到的还是旧内容。
 // 这类事件比真实导航密集得多（后台标签页里的 Gmail/Slack 也会一直发），
 // 所以务必先确认是活动标签页再排队。
 chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
-  if (details.frameId === 0) schedulePagePushFor(details.tabId);
+  if (details.frameId === 0) schedulePagePushFor(details.tabId).catch(() => {});
 });
 
 async function pushCurrentPage() {
@@ -265,11 +265,18 @@ async function cdpRemoteTargets() {
   if (!res.ok) {
     throw new Error(`CDP 端点不可用（HTTP ${res.status}）${CDP_HINT}`);
   }
+  let list;
   try {
-    return await res.json();
+    list = await res.json();
   } catch (e) {
-    throw new Error(isTimeoutErr(e) ? "CDP 端点读取超时（/json/list 响应体 5 秒未读完）" : "CDP 端点返回的不是有效 JSON（/json/list）");
+    throw new Error(isTimeoutErr(e) ? "CDP 端点读取超时（/json/list 响应体 5 秒未读完）" : `CDP 端点返回的不是有效 JSON（/json/list）${CDP_HINT}`);
   }
+  // 端口上可能蹲着别的服务，回了 JSON 但不是目标列表：早点报清楚，
+  // 别等到下面 .find/.filter 抛 "not a function"。
+  if (!Array.isArray(list)) {
+    throw new Error(`CDP 端点返回的 /json/list 不是目标数组${CDP_HINT}`);
+  }
+  return list;
 }
 
 // 失败时抛出的 Error 带 `mayHaveRun` 标记：true 表示求值请求已经发出去、
@@ -398,6 +405,13 @@ function callExpr(fn, ...args) {
 // 且 Chrome 应用商店对所有扩展关闭。判据看 URL 而不是 Chrome 的英文错误
 // 文案——文案会随版本和语言变，而这条判断要决定“副作用到底发生了没有”，
 // 押在会变的字符串上太脆。
+// 这些拒绝理由说明注入根本没能开始跑（标签页没了、站点权限是“点击时”、
+// 参数无法序列化…），副作用必然没发生。仅用于把 indeterminate 收窄成
+// failed，匹配不上就维持 indeterminate，所以文案变化不会导致误判。
+const INJECTION_NEVER_RAN =
+  /no tab with id|no frame with id|cannot access|cannot be scripted|could not be cloned|extensions gallery/i;
+const injectionNeverRan = (err) => INJECTION_NEVER_RAN.test(errMsg(err));
+
 const WEBSTORE_HOST = /^(?:chrome\.google\.com\/webstore|chromewebstore\.google\.com)/i;
 function injectable(url) {
   if (typeof url !== "string" || !/^https?:/i.test(url)) return false;
@@ -417,10 +431,7 @@ function injectable(url) {
  * 并且已经跑偏过，所以统一到这里。
  */
 async function runInPage(tab, fn, args) {
-  const canInject = injectable(tab.url);
-  let injectionError = null;
-
-  if (canInject) {
+  if (injectable(tab.url)) {
     try {
       const [injection = {}] = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
@@ -434,13 +445,16 @@ async function runInPage(tab, fn, args) {
       // 执行了却没有帧结果——多半是页面在结果回传前被导航拆掉了。
       return { status: "indeterminate", error: new Error("脚本注入已执行但帧结果丢失（页面可能已导航）") };
     } catch (e) {
-      // 可注入的页面上被拒：偶发问题（帧被拆除、页面崩溃…）。不回退 CDP，
-      // 也不能断言副作用没发生。
-      return { status: "indeterminate", error: e };
+      // 可注入的页面上被拒。默认按 indeterminate 处理（不回退 CDP，也不断言
+      // 副作用没发生）；只有能认出「压根没跑起来」的少数情形才降级成
+      // failed，好让点击如实报告失败而不是让智能体白跑一趟复核。
+      // 注意方向：这里的文案匹配只用于把 indeterminate *收窄* 成 failed，
+      // Chrome 改文案最多让我们退回 indeterminate——安全的那一侧。
+      return { status: injectionNeverRan(e) ? "failed" : "indeterminate", error: e };
     }
   }
 
-  // 不可注入（扩展页 / chrome:// / PDF / 应用商店）→ CDP 是唯一通道，
+  // 不可注入（扩展页 / chrome:// / file: / 应用商店）→ CDP 是唯一通道，
   // 且注入压根没运行过，副作用必然没发生。
   try {
     const value = await cdpRemoteEvaluate(tab.id, callExpr(fn, ...args));

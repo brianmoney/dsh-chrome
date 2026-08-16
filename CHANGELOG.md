@@ -14,8 +14,11 @@ Follow-up fixes to the 0.1.2 code-review round:
   per added field — synchronously stalling the whole dsh host. The line is old,
   but the redaction fix below is what first put captured (page-controlled)
   bodies through it. Replaced with two linear scans, and `redactBody` now
-  short-circuits on bodies that mention no secret-ish key at all (~6x faster on
-  the common case, and it skips the parse/deep-clone/re-stringify entirely).
+  short-circuits on bodies that mention no secret-ish key at all *and* contain
+  no escape sequence that could spell one (`%74oken`, `token`) — keys are
+  compared after decoding, so a raw-text scan alone would have narrowed what
+  gets masked. Roughly 6x faster on the common case, skipping the
+  parse/deep-clone/re-stringify entirely.
 
 - **intent gate fails closed (security)**: when no `turn/start` event could be
   found, the turn-text extractor fell through to scanning the entire session,
@@ -36,7 +39,9 @@ Follow-up fixes to the 0.1.2 code-review round:
   unrecognised reply envelope, and `redactEntry` projects each entry onto an
   allowlist — a field it does not know is dropped rather than forwarded
   unmasked, and named in that entry's `droppedFields`, so extension/host
-  version skew degrades instead of erroring the whole tool.
+  version skew degrades instead of erroring the whole tool. The envelope is
+  allowlisted the same way, so an added top-level field cannot carry a URL or
+  body past redaction either.
 - **intent-unlock**: allow common English inflections ("opening", "clicking",
   "tabs", "capturing", "debugging") that the 0.1.2 `\b` anchoring accidentally
   rejected, while keeping the substring protection ("table"/"reopen"/

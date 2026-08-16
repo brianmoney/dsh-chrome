@@ -30,6 +30,13 @@ const SECRET_KEY = /(?:^|[_-])(?:token|access[_-]?token|refresh[_-]?token|id[_-]
 const MENTIONS_SECRET =
   /token|secret|passw|pwd|api[_-]?key|apikey|auth|session|sid|cookie|credential|private[_-]?key|signature|sig/i;
 
+// …but key names reach isSecretKey DECODED (redactPairs percent-decodes, and
+// JSON.parse resolves \uXXXX), so a scan of the raw text can miss a secret key
+// that is spelled in escapes: `%74oken=…` and `{"token":…}` both decode to
+// `token`. Any body containing an escape sequence therefore skips the fast path
+// and gets processed in full — correctness beats the speedup here.
+const HAS_ESCAPES = /%[0-9a-f]{2}|\\u[0-9a-f]{4}/i;
+
 function isSecretKey(key) {
   if (typeof key !== "string") return false;
   // No `SECRET_KEY.test("_" + key)` companion check: SECRET_KEY already starts
@@ -89,10 +96,11 @@ function redactJson(value) {
  */
 export function redactBody(body) {
   if (typeof body !== "string" || body.length === 0) return body;
-  // Bail before parsing when nothing in the blob even looks like a secret key.
-  // Captured bodies routinely run to the 1 MB cap, and parse + deep-clone +
-  // re-stringify costs ~30x this scan — on a payload we'd hand back unchanged.
-  if (!MENTIONS_SECRET.test(body)) return body;
+  // Bail before parsing when nothing in the blob even looks like a secret key
+  // and nothing could be hiding one behind an escape sequence. Captured bodies
+  // routinely run to the 1 MB cap, and parse + deep-clone + re-stringify costs
+  // ~30x this scan — on a payload we'd hand back unchanged.
+  if (!MENTIONS_SECRET.test(body) && !HAS_ESCAPES.test(body)) return body;
   const trimmed = body.trim();
 
   // JSON body.
@@ -116,12 +124,19 @@ export function redactBody(body) {
   return body;
 }
 
+// Envelope fields the extension replies with (see the capture_requests case in
+// extension/src/background.js). Like the per-entry allowlist below, anything
+// outside this set is dropped rather than forwarded: a future envelope-level
+// field could just as easily carry a URL or a body.
+const KNOWN_ENVELOPE_FIELDS = new Set(["tabId", "capturing", "count", "entries"]);
+
 /**
  * Redact a browser_capture_requests result. The extension replies with
- * {tabId, capturing, count, entries: [...]}. Fail closed: an envelope this
- * function does not recognise throws rather than passing traffic through
- * unredacted, so a future reply-shape change cannot silently bypass masking
- * while the tool still promises «redacted».
+ * {tabId, capturing, count, entries: [...]}. Fail closed: an envelope without a
+ * recognisable `entries` array throws rather than passing traffic through
+ * unredacted, and any *extra* envelope field is dropped (never forwarded
+ * unmasked) and named in `droppedFields` — so no reply-shape change can
+ * silently bypass masking while the tool still promises «redacted».
  */
 export function redactCaptureResult(result) {
   // (An array's `.entries` is Array.prototype.entries, a function, so the
@@ -131,7 +146,15 @@ export function redactCaptureResult(result) {
       "capture_requests returned an unexpected shape; refusing to pass it through unredacted"
     );
   }
-  return { ...result, entries: result.entries.map(redactEntry) };
+  const out = {};
+  const dropped = [];
+  for (const [key, value] of Object.entries(result)) {
+    if (!KNOWN_ENVELOPE_FIELDS.has(key)) dropped.push(key);
+    else out[key] = value;
+  }
+  out.entries = result.entries.map(redactEntry);
+  if (dropped.length) out.droppedFields = dropped;
+  return out;
 }
 
 // Fields the extension records per capture entry (see the Network.* handlers

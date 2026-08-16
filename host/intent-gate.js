@@ -99,6 +99,11 @@ export function currentTurnUserText(events) {
  */
 export function isUnlocked(events, kind) {
   const pattern = kind === "browser" ? INTENT_PATTERN : kind === "capture" ? CAPTURE_PATTERN : null;
-  if (!pattern) return true; // 未设门槛的工具
+  // 认不出的 kind 一律抛错，绝不当成“没门槛”放行：不设门槛的工具由调用方
+  // 自己不调用本函数来表达（intent: null），而不是把拼错的 kind 静默变成
+  // 通行证——那会让一个 typo 就悄悄解除某个工具的门禁。
+  if (!pattern) {
+    throw new Error(`unknown intent kind ${JSON.stringify(kind)}; refusing to unlock`);
+  }
   return pattern.test(currentTurnUserText(events));
 }
