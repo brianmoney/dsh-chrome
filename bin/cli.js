@@ -5,11 +5,13 @@
 // so this CLI only manages the unpacked extension files that Chrome needs to
 // load in developer mode.
 //
-// Commands:
+// Commands (no argument = install):
 //   dsh-chrome install     copy the bundled extension/ to a stable per-user
-//                          directory and print the chrome://extensions steps
+//                          directory and print the chrome://extensions steps.
+//                          This COPIES: after editing extension/ you must
+//                          re-run install and reload the extension in Chrome.
 //   dsh-chrome path        print that directory (nothing else)
-//   dsh-chrome uninstall   remove that directory
+//   dsh-chrome uninstall   remove that directory (alias: remove)
 //   dsh-chrome help        this text
 
 import { fileURLToPath } from "node:url";

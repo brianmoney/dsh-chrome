@@ -7,10 +7,15 @@
 //      （get_page / list_tabs / navigate / click / open_tab / capture_*）。
 //   3. 通过 Chrome DevTools 协议（chrome.debugger）抓取活动标签页的
 //      HTTP 请求/响应，供智能体读取。
-//   4. 监听页面变化（标签切换 / 导航，含 SPA），防抖后把“当前页面”
-//      （URL/标题/正文，1MB 保护阀）推给 dsh 侧，由页面注入器写进会话。
+//   4. 监听页面变化（标签切换 / 主框架导航 / SPA 路由），防抖后把“当前页面”
+//      （URL/标题/正文，1,000,000 字符封顶）推给 dsh 侧，由页面注入器写进会话。
+//   5. 与侧栏之间的 port 通信（name "panel"）：广播桥接/抓包状态与错误，
+//      接收“停止抓包”指令，并在 dsh 重启或模块图变化时让侧栏刷新。
+//   6. 远程 CDP 回退：chrome.scripting 无法注入的页面（跨扩展页 / chrome:// /
+//      PDF 等）改走 http://127.0.0.1:9222 的远程调试协议读取或点击。
 //
-// 侧栏本身只嵌入 dsh 网页界面；本 worker 是扩展里唯一接触 Chrome API 的部分。
+// 侧栏页面本身只嵌入 dsh 网页界面（外加一条状态栏）；本 worker 是扩展里
+// 唯一接触 Chrome API 的部分。
 
 const DEFAULT_DSH_URL = "http://127.0.0.1:3080";
 
@@ -26,7 +31,18 @@ let wasDown = false; // 桥接曾断开：重连后触发侧栏自动刷新（ds
 const captures = new Map(); // tabId -> { attached: bool, entries: [], seq }
 const MAX_ENTRIES = 500; // 每个标签页保留的请求条数
 const MAX_BODY = 1_000_000; // 单个请求/响应体保留的字符数（1MB 保护阀）
-const MAX_PAGE = 1_000_000; // 页面正文推送的字符数上限（1MB 保护阀）
+
+/**
+ * 截到 MAX_BODY 并复制成独立字符串。
+ * slice 返回的是共享原串内存的视图，抓包条目最多留 500 条、直到标签页关闭
+ * 才释放，直接存视图会把每条的完整原始响应体（可能几十 MB）一起钉住。
+ */
+const capBody = (s) => (s.length > MAX_BODY ? (" " + s.slice(0, MAX_BODY)).slice(1) : s);
+const MAX_PAGE = 1_000_000; // 自动推送的页面正文字符数上限（1MB 保护阀）
+// browser_get_page 按需读取的限额——与上面的自动注入是两套额度，
+// README / docs/bridge-protocol.md 都引用这两个数字。
+const GET_PAGE_TEXT_LIMIT = 40_000;
+const GET_PAGE_MAX_LINKS = 400;
 
 // ---- 侧栏通信 ----
 
@@ -62,7 +78,7 @@ function broadcastStatus() {
 }
 
 function reportError(err) {
-  toPanel({ type: "status", kind: "error", text: String(err && err.message ? err.message : err) });
+  toPanel({ type: "status", kind: "error", text: errMsg(err) });
 }
 
 // ---- 设置（dsh 地址） ----
@@ -133,20 +149,22 @@ function scheduleReconnect() {
   wsRetry = Math.min(wsRetry * 2, 30000);
 }
 
+const bridgeOpen = () => Boolean(ws) && ws.readyState === WebSocket.OPEN;
+
 function sendResult(id, ok, result, error) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!bridgeOpen()) return;
   ws.send(JSON.stringify({ type: "result", id, ok, result, error }));
 }
 
 function sendPage(tab) {
-  if (!ws || ws.readyState !== WebSocket.OPEN || !tab) return;
+  if (!bridgeOpen() || !tab) return;
   ws.send(JSON.stringify({ type: "page", tab }));
 }
 
 // 空闲保活：有活动 WebSocket 时 MV3 的 service worker 不会被挂起，
 // ping 同时用于检测连接健康。
 setInterval(() => {
-  if (ws && ws.readyState === WebSocket.OPEN) {
+  if (bridgeOpen()) {
     ws.send(JSON.stringify({ type: "ping" }));
   } else {
     connectBridge();
@@ -156,6 +174,7 @@ setInterval(() => {
 // ---- 页面变化监听（当前页面自动推送） ----
 
 let pageTimer = null;
+let lastPushed = null; // { url, length } 上次推过的页面，用于跳过重复推送
 function schedulePagePush() {
   if (pageTimer) clearTimeout(pageTimer);
   pageTimer = setTimeout(() => {
@@ -164,21 +183,40 @@ function schedulePagePush() {
   }, 2000); // 防抖：快速连续导航只推最后一次
 }
 
+/** 只有活动标签页的导航才值得重抓——推的永远是活动标签页。 */
+async function schedulePagePushFor(tabId) {
+  const tab = await activeTab();
+  if (tab && tab.id === tabId) schedulePagePush();
+}
+
 chrome.tabs.onActivated.addListener(() => schedulePagePush());
-// 含 SPA 路由（history.pushState 等）在内的主框架导航
+// 主框架的真实导航
 chrome.webNavigation.onCommitted.addListener((details) => {
-  if (details.frameId === 0) schedulePagePush();
+  if (details.frameId === 0) schedulePagePushFor(details.tabId);
+});
+// SPA 路由（history.pushState/replaceState）不会触发 onCommitted，
+// 必须单独监听，否则单页应用换“页面”时智能体看到的还是旧内容。
+// 这类事件比真实导航密集得多（后台标签页里的 Gmail/Slack 也会一直发），
+// 所以务必先确认是活动标签页再排队。
+chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
+  if (details.frameId === 0) schedulePagePushFor(details.tabId);
 });
 
 async function pushCurrentPage() {
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  const id = tab && tab.id != null ? tab.id : null;
-  if (id == null) return;
-  // chrome:// 等内部页面、Chrome 应用商店页等不可注入，直接跳过
-  if (tab.url && !/^https?:/i.test(tab.url)) return;
-  const page = await scrapeTab(id, MAX_PAGE, 0);
-  if (!page) return;
-  sendPage({ url: page.url, title: page.title, content: page.text });
+  // 桥接没连上时 sendPage 会直接丢弃这一帧，所以先查连接再抓取：否则
+  // dsh 没运行时每次切标签/导航都白做一次全文提取（还可能触发 CDP 请求）。
+  if (!bridgeOpen()) return;
+  const tab = await activeTab();
+  if (!tab) return;
+  // chrome:// 等内部页面、Chrome 应用商店页等不可注入，直接跳过。
+  // url 为空（标签页尚未提交导航，只有 pendingUrl）时同样跳过。
+  if (!injectable(tab.url)) return;
+  const page = await scrapeTab(tab, MAX_PAGE, 0);
+  // replaceState 常常反复推同一个页面：URL 与正文长度都没变就别再注入一遍
+  // （每次注入都是一条最大 1MB 的用户消息）。
+  if (lastPushed && lastPushed.url === page.url && lastPushed.length === page.text.length) return;
+  lastPushed = { url: page.url, length: page.text.length };
+  sendPage({ url: page.url, title: page.title, content: page.text, truncated: Boolean(page.truncated) });
 }
 
 // ---- 浏览器动作执行器（dsh 的 browser_* 工具调用） ----
@@ -187,15 +225,16 @@ function errMsg(e) {
   return String(e && e.message ? e.message : e);
 }
 
-async function activeTabId() {
+/** 当前活动标签页（没有则 null）。“哪个标签页是活动的”只在这里定义一次。 */
+async function activeTab() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  return tab && tab.id != null ? tab.id : null;
+  return tab && tab.id != null ? tab : null;
 }
 
 async function needActiveTab() {
-  const id = await activeTabId();
-  if (id == null) throw new Error("没有活动标签页");
-  return id;
+  const tab = await activeTab();
+  if (!tab) throw new Error("没有活动标签页");
+  return tab;
 }
 
 // ---- 远程 CDP 回退（读取 chrome-extension:// 等无法注入脚本的页面） ----
@@ -204,67 +243,112 @@ async function needActiveTab() {
 // 唯一通道是浏览器的远程调试协议，因此要求 Helium/Chrome 以
 // `--remote-debugging-port=<CDP_PORT>` 启动。
 const CDP_PORT = 9222;
+const CDP_HINT = `——浏览器是否以 --remote-debugging-port=${CDP_PORT} 启动？`;
+
+const isTimeoutErr = (e) => Boolean(e && (e.name === "TimeoutError" || e.name === "AbortError"));
 
 async function cdpRemoteTargets() {
-  // Bound the request: a wedged debugging endpoint must not hang the tool call.
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 5000);
+  // 限时 5 秒：signal 交给 fetch 后同时约束响应头与响应体的读取，
+  // 调试端点卡死（含只发头不发体）都不能拖垮工具调用。
+  const signal = AbortSignal.timeout(5000);
   let res;
   try {
-    res = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`, { signal: ctrl.signal });
+    res = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`, { signal });
   } catch (e) {
-    throw new Error(`CDP 端点不可达（${e && e.name === "AbortError" ? "超时" : "连接失败"}）——浏览器是否以 --remote-debugging-port=${CDP_PORT} 启动？`);
-  } finally {
-    clearTimeout(timer);
+    throw new Error(`CDP 端点不可达（${isTimeoutErr(e) ? "超时" : "连接失败"}）${CDP_HINT}`);
   }
   if (!res.ok) {
-    throw new Error(`CDP 端点不可用（HTTP ${res.status}）——浏览器是否以 --remote-debugging-port=${CDP_PORT} 启动？`);
+    throw new Error(`CDP 端点不可用（HTTP ${res.status}）${CDP_HINT}`);
   }
-  return res.json();
+  try {
+    return await res.json();
+  } catch (e) {
+    throw new Error(isTimeoutErr(e) ? "CDP 端点读取超时（/json/list 响应体 5 秒未读完）" : "CDP 端点返回的不是有效 JSON（/json/list）");
+  }
 }
 
+// 失败时抛出的 Error 带 `mayHaveRun` 标记：true 表示求值请求已经发出去、
+// 结果却没回来（超时／连接中断），此时表达式可能已经在页面里执行过。
+// 点击路径靠它区分“肯定没点到”和“可能已经点了”。
 function cdpWsEvaluate(wsUrl, expression, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
     let ws;
+    let sent = false;
+    // mayHaveRun：请求发出去了、却没等到应答，表达式可能已经在页面里跑过。
+    // 拿到应答（哪怕是错误应答）就说明它没跑成，那是确定的失败。
+    const fail = (message, mayHaveRun) => {
+      const err = new Error(message);
+      err.mayHaveRun = Boolean(mayHaveRun);
+      reject(err);
+    };
     try {
       ws = new WebSocket(wsUrl);
     } catch (e) {
-      return reject(e);
+      return reject(e); // 连都没连上 → 必然没执行
     }
     const timer = setTimeout(() => {
       try { ws.close(); } catch {}
-      reject(new Error("CDP WebSocket 超时"));
+      fail("CDP WebSocket 超时", sent);
     }, timeoutMs);
-    ws.onopen = () =>
+    ws.onopen = () => {
       ws.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression, returnByValue: true, awaitPromise: true } }));
+      sent = true;
+    };
     ws.onmessage = (ev) => {
       let m;
       try { m = JSON.parse(ev.data); } catch { return; }
       if (m.id !== 1) return;
       clearTimeout(timer);
       try { ws.close(); } catch {}
-      if (m.error) reject(new Error(m.error.message || "CDP 协议错误"));
-      else if (m.result && m.result.exceptionDetails) reject(new Error(m.result.exceptionDetails.text || "CDP 求值异常"));
+      if (m.error) fail(m.error.message || "CDP 协议错误", false);
+      else if (m.result && m.result.exceptionDetails) fail(m.result.exceptionDetails.text || "CDP 求值异常", false);
       else resolve(m.result && m.result.result ? m.result.result.value : null);
     };
-    ws.onerror = () => { clearTimeout(timer); reject(new Error("CDP WebSocket 连接失败")); };
+    ws.onerror = () => { clearTimeout(timer); fail("CDP WebSocket 连接失败", sent); };
   });
 }
 
+/**
+ * 找到 tabId 对应的远程 CDP 目标，并在其中求值。
+ *
+ * 按“目标身份”而非 URL 匹配：chrome.debugger.getTargets() 给出每个目标的
+ * tabId 与 DevTools 目标 id，而 /json/list 的 webSocketDebuggerUrl 末段正是
+ * 同一个 id，两者做一次 id 连接即可唯一确定标签页。URL 匹配做不到这一点
+ * ——同 URL 的两个标签页、内嵌 iframe（本扩展侧栏里的 dsh 界面就是）、
+ * 以及导航中 URL 漂移都会让它选错或选不到。
+ */
 async function cdpRemoteEvaluate(tabId, expression) {
+  // 两个请求彼此无依赖，并发发起，省掉一次串行往返。
+  const [targetId, targets] = await Promise.all([
+    chrome.debugger
+      .getTargets()
+      .then((list) => list.find((t) => t.tabId === tabId)?.id ?? null)
+      .catch(() => null), // getTargets 不可用 → 按 URL 兜底
+    cdpRemoteTargets(),
+  ]);
+
+  // id 对不上不算致命：已被别的调试客户端附着的目标（本扩展刚 start_capture
+  // 过、或用户开着 DevTools）在 /json/list 里不带 webSocketDebuggerUrl，而
+  // TargetInfo.id 与 /json/list 的 id 相等本身也是未公开的约定——所以匹配不到
+  // 就往下走 URL 兜底，不报错。
+  const byId = targetId && targets.find((t) => t.webSocketDebuggerUrl && t.id === targetId);
+  if (byId) return cdpWsEvaluate(byId.webSocketDebuggerUrl, expression);
+
+  // 兜底：按 URL 精确匹配。不做前缀匹配（会匹配到另一个标签页的
+  // /document、?id=2 等）；只认 type "page"，没有 page 时才考虑其它可调试
+  // 类型（部分浏览器把扩展页标成别的 type），但 iframe 永远不是标签页的
+  // 顶层文档，一律排除。多个候选宁可报错也不驱动错误的标签页。
   const tab = await chrome.tabs.get(tabId);
   if (!tab || !tab.url) throw new Error("无法获取标签页 URL");
-  const targets = await cdpRemoteTargets();
   const base = tab.url.split("#")[0];
-  // Match by exact URL among debuggable targets (those exposing a
-  // webSocketDebuggerUrl — which includes chrome-extension pages, not just
-  // type "page"). Fail safe rather than guess: error if zero or if ambiguous
-  // (multiple tabs on the same URL) so we never drive the wrong tab.
-  const candidates = targets.filter(
-    (t) => t.webSocketDebuggerUrl && t.url && t.url.split("#")[0] === base
-  );
+  const matched = targets.filter((t) => t.webSocketDebuggerUrl && t.url?.split("#")[0] === base);
+  const pages = matched.filter((t) => t.type === "page");
+  const candidates = pages.length > 0 ? pages : matched.filter((t) => t.type !== "iframe");
   if (candidates.length === 0) {
-    throw new Error(`未找到该标签页的 CDP 目标（${base}）——该页面可能未在远程调试中列出`);
+    throw new Error(
+      `未找到该标签页的 CDP 目标（${base}）——该页面可能未在远程调试中列出，` +
+        `或它的调试通道已被占用（正在抓包／DevTools 已打开）${targetId ? `；按目标 id ${targetId} 也未匹配到` : ""}`
+    );
   }
   if (candidates.length > 1) {
     throw new Error(`有多个标签页匹配同一 URL（${base}），无法确定目标；请只保留一个后重试`);
@@ -272,51 +356,127 @@ async function cdpRemoteEvaluate(tabId, expression) {
   return cdpWsEvaluate(candidates[0].webSocketDebuggerUrl, expression);
 }
 
-async function cdpScrapeTab(tabId, textLimit, maxLinks) {
-  const linksExpr = maxLinks
-    ? `[...document.querySelectorAll('a[href]')].slice(0, ${maxLinks}).map(a => ({ text: (a.innerText || '').trim().slice(0, 120), href: a.href }))`
-    : "undefined";
-  const expr = `(() => {
-    const bodyText = document.body ? document.body.innerText : '';
-    return {
-      url: location.href,
-      title: document.title,
-      text: bodyText.slice(0, ${textLimit}),
-      links: ${linksExpr}
-    };
-  })()`;
+// ---- 页内脚本（注入与 CDP 两条路径共用同一份实现） ----
+// 这两个函数必须是顶层、无闭包的：chrome.scripting 用 toString 序列化它们，
+// CDP 路径把同一份源码拼进 Runtime.evaluate 表达式。两边曾各自维护一份副本
+// 并已发生实现漂移，故统一到这里。
+
+function scrapePage(textLimit, maxLinks) {
+  const bodyText = (document.body && document.body.innerText) || "";
+  return {
+    url: location.href,
+    title: document.title,
+    text: bodyText.slice(0, textLimit),
+    truncated: bodyText.length > textLimit,
+    links: maxLinks
+      ? [...document.querySelectorAll("a[href]")].slice(0, maxLinks).map((a) => ({
+          text: (a.innerText || "").trim().slice(0, 120),
+          href: a.href,
+        }))
+      : undefined,
+  };
+}
+
+function clickSelector(sel) {
+  const el = document.querySelector(sel);
+  if (!el) return { clicked: false, reason: "没有元素匹配 " + sel };
+  el.click();
+  return { clicked: true, text: (el.innerText || "").trim().slice(0, 120) };
+}
+
+/** 把一个顶层函数按参数拼成 CDP Runtime.evaluate 表达式。 */
+function callExpr(fn, ...args) {
+  return `(${fn.toString()})(${args.map((a) => JSON.stringify(a)).join(", ")})`;
+}
+
+// 「这个页面根本不允许注入脚本」的结构性判据：只有 http(s) 页面能注入，
+// 且 Chrome 应用商店对所有扩展关闭。判据看 URL 而不是 Chrome 的英文错误
+// 文案——文案会随版本和语言变，而这条判断要决定“副作用到底发生了没有”，
+// 押在会变的字符串上太脆。
+const WEBSTORE_HOST = /^(?:chrome\.google\.com\/webstore|chromewebstore\.google\.com)/i;
+function injectable(url) {
+  if (typeof url !== "string" || !/^https?:/i.test(url)) return false;
+  return !WEBSTORE_HOST.test(url.replace(/^https?:\/\//i, ""));
+}
+
+/**
+ * 在标签页里跑一段页内函数，先注入、必要时回退远程 CDP。
+ *
+ * 返回三态，让调用方各自决定怎么处理——这正是抓取与点击唯一的差别：
+ *   { status: "ok", value }            拿到了返回值
+ *   { status: "failed", error }        确定没跑成（副作用必然没发生）
+ *   { status: "indeterminate", error } 跑没跑完不知道（副作用可能已发生）
+ *
+ * 点击不是幂等操作，"indeterminate" 与 "failed" 的区别对它性命攸关；
+ * 抓取则可以把两者一视同仁地当失败报。两条路径以前各写一遍这套状态机，
+ * 并且已经跑偏过，所以统一到这里。
+ */
+async function runInPage(tab, fn, args) {
+  const canInject = injectable(tab.url);
+  let injectionError = null;
+
+  if (canInject) {
+    try {
+      const [injection = {}] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: fn,
+        args,
+      });
+      if (injection.result) return { status: "ok", value: injection.result };
+      // 注入执行了但页内抛错：Chrome 正常 resolve，异常放在 error 字段里，
+      // 此时函数没跑完，副作用必然没发生。
+      if (injection.error) return { status: "failed", error: new Error(errMsg(injection.error)) };
+      // 执行了却没有帧结果——多半是页面在结果回传前被导航拆掉了。
+      return { status: "indeterminate", error: new Error("脚本注入已执行但帧结果丢失（页面可能已导航）") };
+    } catch (e) {
+      // 可注入的页面上被拒：偶发问题（帧被拆除、页面崩溃…）。不回退 CDP，
+      // 也不能断言副作用没发生。
+      return { status: "indeterminate", error: e };
+    }
+  }
+
+  // 不可注入（扩展页 / chrome:// / PDF / 应用商店）→ CDP 是唯一通道，
+  // 且注入压根没运行过，副作用必然没发生。
   try {
-    const value = await cdpRemoteEvaluate(tabId, expr);
-    return value && typeof value === "object" ? value : null;
-  } catch {
-    return null;
+    const value = await cdpRemoteEvaluate(tab.id, callExpr(fn, ...args));
+    if (!value || typeof value !== "object") {
+      return { status: "failed", error: new Error("CDP 求值未返回结果") };
+    }
+    return { status: "ok", value };
+  } catch (e) {
+    // 求值请求已发出但结果丢失 → 表达式可能已经在页面里跑过了。
+    return { status: e?.mayHaveRun ? "indeterminate" : "failed", error: e };
   }
 }
 
-// 注入式抓取器：get_page 与页面推送共用。
-// 优先 chrome.scripting 注入；失败（扩展页 / chrome:// / PDF 等）回退 CDP。
-async function scrapeTab(tabId, textLimit, maxLinks) {
-  try {
-    const [{ result } = {}] = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: (textLimit, maxLinks) => ({
-        url: location.href,
-        title: document.title,
-        text: (document.body?.innerText || "").slice(0, textLimit),
-        links: maxLinks
-          ? [...document.querySelectorAll("a[href]")].slice(0, maxLinks).map((a) => ({
-              text: (a.innerText || "").trim().slice(0, 120),
-              href: a.href,
-            }))
-          : undefined,
-      }),
-      args: [textLimit, maxLinks],
-    });
-    if (result) return result;
-  } catch {
-    // 注入失败 → 交给 CDP 回退
+// 注入式抓取器：get_page 与页面推送共用。抓取可以重试，因此
+// indeterminate 与 failed 一样当失败报（带上真正的原因）。
+async function scrapeTab(tab, textLimit, maxLinks) {
+  const r = await runInPage(tab, scrapePage, [textLimit, maxLinks]);
+  if (r.status === "ok") return r.value;
+  throw new Error(`读取页面失败：${errMsg(r.error)}`);
+}
+
+/**
+ * 点击活动标签页里匹配选择器的元素。成功返回结果对象，失败抛错
+ * （与其它动作一致，由 handleAction 统一转成 ok:false）。
+ *
+ * 点击不是幂等操作：一旦无法确定它是否已经发生，就绝不重试、也不回退 CDP
+ * （那会在导航后的新页面上二次点击同一选择器），而是如实上报
+ * clicked:"unknown"，让智能体去复核而不是重来。
+ */
+async function clickTab(tab, selector) {
+  const r = await runInPage(tab, clickSelector, [selector]);
+  if (r.status === "indeterminate") {
+    return {
+      clicked: "unknown",
+      reason: "result_lost",
+      detail: errMsg(r.error),
+    };
   }
-  return cdpScrapeTab(tabId, textLimit, maxLinks);
+  if (r.status === "failed") throw new Error(errMsg(r.error));
+  if (!r.value.clicked) throw new Error(r.value.reason || "点击失败");
+  return r.value;
 }
 
 // 导航加载跟踪：确认导航真正完成，避免抓到旧页面。
@@ -353,54 +513,23 @@ async function handleAction(msg) {
   const p = (msg.params && typeof msg.params === "object") ? msg.params : {};
   switch (msg.action) {
     case "get_page": {
-      const id = await needActiveTab();
-      const page = await scrapeTab(id, 40000, 400);
-      return sendResult(msg.id, true, page, null);
+      const tab = await needActiveTab();
+      return sendResult(msg.id, true, await scrapeTab(tab, GET_PAGE_TEXT_LIMIT, GET_PAGE_MAX_LINKS), null);
     }
     case "list_tabs": {
       const tabs = await chrome.tabs.query({});
       return sendResult(msg.id, true, tabs.map((t) => ({ id: t.id, url: t.url, title: t.title, active: t.active })), null);
     }
     case "navigate": {
-      const id = await needActiveTab();
+      const { id } = await needActiveTab();
       const awaitLoad = loadTracker(id, true);
       await chrome.tabs.update(id, { url: p.url });
       const loaded = await awaitLoad();
       return sendResult(msg.id, true, `已导航到 ${p.url}` + (loaded ? "" : "（15 秒内未确认加载完成）"), null);
     }
     case "click": {
-      const id = await needActiveTab();
-      try {
-        const [{ result } = {}] = await chrome.scripting.executeScript({
-          target: { tabId: id },
-          func: (sel) => {
-            const el = document.querySelector(sel);
-            if (!el) return { clicked: false, reason: "没有元素匹配 " + sel };
-            el.click();
-            return { clicked: true, text: (el.innerText || "").trim().slice(0, 120) };
-          },
-          args: [p.selector],
-        });
-        if (result && result.clicked) return sendResult(msg.id, true, result, null);
-        // Injection ran (normal page) — report its result and do NOT fall
-        // through to CDP, even if the result came back empty/undefined.
-        return sendResult(msg.id, false, null, (result && result.reason) || "点击失败");
-      } catch {
-        // 注入被拒（跨扩展页面等）→ 回退 CDP（仅注入抛错时）
-      }
-      try {
-        const sel = JSON.stringify(p.selector);
-        const value = await cdpRemoteEvaluate(id, `(() => {
-          const el = document.querySelector(${sel});
-          if (!el) return { clicked: false, reason: "没有元素匹配 " + ${sel} };
-          el.click();
-          return { clicked: true, text: (el.innerText || "").trim().slice(0, 120) };
-        })()`);
-        if (value && value.clicked) return sendResult(msg.id, true, value, null);
-        return sendResult(msg.id, false, null, (value && value.reason) || "点击失败");
-      } catch (e) {
-        return sendResult(msg.id, false, null, errMsg(e));
-      }
+      const tab = await needActiveTab();
+      return sendResult(msg.id, true, await clickTab(tab, p.selector), null);
     }
     case "open_tab": {
       const tab = await chrome.tabs.create({ url: p.url });
@@ -408,17 +537,17 @@ async function handleAction(msg) {
       return sendResult(msg.id, true, `已打开标签页 ${tab.id}: ${p.url}` + (loaded ? "" : "（15 秒内未确认加载完成）"), null);
     }
     case "start_capture": {
-      const id = await needActiveTab();
+      const { id } = await needActiveTab();
       await startCapture(id);
       return sendResult(msg.id, true, `已开始抓取标签页 ${id} 的 HTTP 请求/响应（浏览器顶部会出现调试横幅）`, null);
     }
     case "stop_capture": {
-      const id = await needActiveTab();
+      const { id } = await needActiveTab();
       const stopped = await stopCapture(id);
       return sendResult(msg.id, true, stopped ? "抓包已停止" : "抓包本就没有在运行", null);
     }
     case "capture_requests": {
-      const id = await needActiveTab();
+      const { id } = await needActiveTab();
       const c = captures.get(id);
       const entries = c ? c.entries.map(({ body, postData, ...rest }) => ({ ...rest, body: body || undefined, postData: postData || undefined })) : [];
       return sendResult(msg.id, true, { tabId: id, capturing: Boolean(c && c.attached), count: entries.length, entries }, null);
@@ -469,8 +598,8 @@ async function stopCapture(tabId) {
 }
 
 async function stopActiveCapture() {
-  const id = await activeTabId();
-  if (id != null) await stopCapture(id);
+  const tab = await activeTab();
+  if (tab) await stopCapture(tab.id);
   broadcastStatus();
 }
 
@@ -498,7 +627,7 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
       method: request.method,
       url: request.url,
       type,
-      postData: request.postData ? request.postData.slice(0, MAX_BODY) : undefined,
+      postData: request.postData ? capBody(request.postData) : undefined,
       status: null,
       mimeType: null,
       body: null,
@@ -520,7 +649,7 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
         "Network.getResponseBody",
         { requestId: params.requestId }
       );
-      entry.body = (base64Encoded ? "[base64] " + atob(body) : body).slice(0, MAX_BODY);
+      entry.body = capBody(base64Encoded ? "[base64] " + atob(body) : body);
     } catch {
       entry.body = "(响应体不可用)";
     }
@@ -533,32 +662,14 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
 
-// 输入历史内容脚本：注入 dsh 网页界面，给输入框加 ↑/↓ 历史召回。
-// 按当前配置的 dsh 地址注册；设置里改地址后自动重注册。
-const COMPOSER_SCRIPT_ID = "composer-history";
-async function registerComposerHistory() {
-  try {
-    await chrome.scripting.unregisterContentScripts({ ids: [COMPOSER_SCRIPT_ID] }).catch(() => {});
-    await chrome.scripting.registerContentScripts([
-      {
-        id: COMPOSER_SCRIPT_ID,
-        matches: [`${dshUrl}/*`],
-        js: ["src/composer-history.js"],
-        runAt: "document_idle",
-        allFrames: true,
-      },
-    ]);
-  } catch {}
-}
-
+// 设置里改了 dsh 地址 → 重新载入配置（新地址在下次桥接重连时生效）。
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.dsh_url) {
-    loadSettings().then(() => registerComposerHistory()).catch(() => {});
+    loadSettings().catch(() => {});
   }
 });
 
 (async () => {
   await loadSettings();
-  registerComposerHistory();
   connectBridge();
 })();

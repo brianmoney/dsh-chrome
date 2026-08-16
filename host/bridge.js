@@ -5,13 +5,17 @@
 //   - call(action, params, timeoutMs)  → 向浏览器扩展发起一次动作并等待结果
 //   - onPage(listener) / currentPage() → “当前页面”快照的推送与读取
 //     （由页面注入插件消费，注入到最近活跃会话）
+//   - isConnected()                    → 当前是否有扩展连着
 //
 // 协议（与 extension/src/background.js 对应）：
 //   扩展 → dsh：{type:"result", id, ok, result, error} 动作应答
-//               {type:"page", tab:{url,title,content}}   页面变化推送
+//               {type:"page", tab:{url,title,content,truncated}} 页面变化推送
 //               {type:"ping"}
 //   dsh → 扩展：{type:"action", id, action, params}
 //               {type:"pong"}
+//               {type:"graph-changed"} 模块图变化广播（无 id、无应答），
+//                 扩展收到后刷新侧栏内嵌的 dsh 页面；注入 clientModules
+//                 就是为了订阅这个变化。
 //
 // 安全说明：该路由与 dsh web 的 /api 一样，仅在回环/受信主机上可达；
 // 本机任意程序都能连接，这与现有回环信任模型一致。
@@ -21,6 +25,18 @@ import { randomUUID } from "node:crypto";
 
 export const name = "dsh-chrome-bridge";
 export const inject = ["webServer", "clientModules"];
+
+// 页面正文字符上限。封顶与“是否已截断”的判定都只在这里做，页面注入器只
+// 消费结论。（扩展侧 MAX_PAGE 是跨运行时不得不复制的一份，改动时须同步
+// extension/src/background.js。）
+const MAX_PAGE_CONTENT = 1_000_000;
+
+/**
+ * 把 slice 出来的字符串复制成独立字符串。
+ * V8 的 slice 返回的是共享原串内存的视图，直接存进长生命周期的 currentPage
+ * 会把整个超长原串一起钉在内存里（50MB 推送 → 常驻 50MB 而不是 1MB）。
+ */
+const flatten = (s) => (" " + s).slice(1);
 
 export function apply(ctx) {
   const sockets = new Set();
@@ -60,10 +76,19 @@ export function apply(ctx) {
       if (msg.type === "page") {
         const tab = msg.tab && typeof msg.tab === "object" ? msg.tab : null;
         if (!tab || typeof tab.url !== "string") return;
+        // 入口处就截断正文：本机任意程序都能连上桥接，不能让超长推送滞留在
+        // currentPage 或原样扇出给监听者。
+        const raw = typeof tab.content === "string" ? tab.content : "";
+        const content = raw.length > MAX_PAGE_CONTENT ? flatten(raw.slice(0, MAX_PAGE_CONTENT)) : raw;
+        // 扩展侧已截断时随帧上报 truncated；旧版扩展不发这个字段，而它切出来
+        // 的正文长度恰好等于上限，因此长度达到上限也视为已截断（代价是正好
+        // 等于上限的完整页面会被多标一次，可接受）。
+        const truncated = tab.truncated === true || raw.length >= MAX_PAGE_CONTENT;
         currentPage = {
           url: tab.url,
           title: typeof tab.title === "string" ? tab.title : "",
-          content: typeof tab.content === "string" ? tab.content : "",
+          content,
+          truncated,
           at: Date.now(),
         };
         for (const listener of pageListeners) {

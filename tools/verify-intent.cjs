@@ -1,64 +1,22 @@
-// 用真实会话事件验证 currentTurnUserText 修复
-const { zstdDecompressSync } = require("node:zlib");
-const fs = require("node:fs");
+// 用真实会话事件验证意图门（host/intent-gate.js）的放行/拦截结果。
+//
+//   node tools/verify-intent.cjs <session-file>
+//
+// 判定逻辑全部来自生产模块，本脚本一行都不复刻——两边各自维护副本时曾经
+// 漂移，导致这里放行了生产实际拦截的输入。
 
-const buf = fs.readFileSync(process.argv[2]);
-const starts = [0];
-for (let i = 3; i < buf.length; i++) {
-  if (buf[i - 3] === 0x28 && buf[i - 2] === 0xb5 && buf[i - 1] === 0x2f && buf[i] === 0xfd) starts.push(i - 3);
-}
-const frames = [];
-for (let k = 0; k < starts.length; k++) {
-  const s = starts[k];
-  const e = k + 1 < starts.length ? starts[k + 1] : buf.length;
-  frames.push(zstdDecompressSync(buf.subarray(s, e)));
-}
-const text = Buffer.concat(frames).toString("utf8");
-const events = [];
-for (const l of text.split("\n")) {
-  if (!l.trim()) continue;
-  try {
-    const e = JSON.parse(l);
-    if (e && typeof e === "object" && e.type && e.seq !== undefined) events.push(e);
-  } catch {}
-}
+const { readSessionEvents, loadIntentGate } = require("./session-log.cjs");
 
-// 与 host/browser-tools.js 完全一致的逻辑
-const INTENT_PATTERN = /打开|跳转|点击|导航|浏览一下|新标签|访问|open|navigate|click|visit|tab/i;
-function currentTurnUserText(events) {
-  const textOf = (e) => {
-    const content = e.data?.message?.content ?? e.data?.content ?? [];
-    const parts = [];
-    for (const block of content) {
-      if (block.type === "text" && block.text) parts.push(block.text);
-    }
-    return parts.join("\n");
-  };
-  let start = -1;
-  for (let i = events.length - 1; i >= 0; i--) {
-    if (events[i].type === "turn/start") { start = i; break; }
-  }
-  const parts = [];
-  for (let i = start - 1; i >= 0; i--) {
-    const e = events[i];
-    if (e.type === "turn/end") break;
-    if (e.type === "user/message" && e.data?.source?.kind === "user") {
-      const t = textOf(e);
-      if (t) parts.unshift(t);
-      break;
-    }
-  }
-  for (let i = start + 1; i < events.length; i++) {
-    const e = events[i];
-    if (e.type === "user/message" && e.data?.source?.kind === "user") {
-      const t = textOf(e);
-      if (t) parts.push(t);
-    }
-  }
-  return parts.join("\n");
-}
+(async () => {
+  const { currentTurnUserText, isUnlocked } = await loadIntentGate();
+  const events = readSessionEvents(process.argv[2]);
 
-const joined = currentTurnUserText(events);
-console.log("提取文本:", JSON.stringify(joined));
-console.log("意图匹配:", INTENT_PATTERN.test(joined));
-if (!INTENT_PATTERN.test(joined)) process.exit(1);
+  const joined = currentTurnUserText(events);
+  console.log("提取文本:", JSON.stringify(joined));
+  if (!joined) {
+    console.log("（空：本轮没有用户真实消息，或日志里找不到 turn/start——门禁此时失败关闭）");
+  }
+  console.log("浏览器意图放行:", isUnlocked(events, "browser"));
+  console.log("抓包意图放行:", isUnlocked(events, "capture"));
+  if (!isUnlocked(events, "browser")) process.exit(1);
+})();

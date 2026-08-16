@@ -7,7 +7,10 @@ Chrome 扩展的 service worker 与 dsh 侧的桥接插件（`host/bridge.js`）
 ## 扩展 → dsh
 
 ### `result`
-对一个 `action` 的应答。
+对一个 `action` 的应答。`ok:true` 时 `error` 为 `null`，`ok:false` 时
+`result` 为 `null`。`result` 的类型随动作而定：可能是对象（`get_page`、
+`click`）、数组（`list_tabs`）或人类可读的字符串（`navigate`、`open_tab`、
+`start_capture`、`stop_capture`）。
 
 ```jsonc
 { "type": "result", "id": "…", "ok": true, "result": { … } }
@@ -15,11 +18,19 @@ Chrome 扩展的 service worker 与 dsh 侧的桥接插件（`host/bridge.js`）
 ```
 
 ### `page`
-页面变化推送（标签切换 / 主框架导航后，防抖约 2 秒）。正文在扩展侧
-已按 1MB 保护阀截断。dsh 侧由页面注入器写进最近活跃会话。
+页面变化推送。三个触发点：标签切换、主框架导航、SPA 路由变化
+（`history.pushState` 等），前述三者防抖约 2 秒；此外桥接（重）连接成功时
+会立即补推一次，不防抖。非 `http(s)` 的标签页（`chrome://` 等）整个跳过，
+不发帧。
+
+正文在扩展侧已按 1,000,000 字符的保护阀截断，截断时 `truncated` 为 true；
+桥接侧在正文长度达到上限时也会置 true（无论是否需要再截断，用于兼容不发
+该字段的旧版扩展）。正文长度恰好等于上限时无法靠长度分辨是否截断，故
+`truncated` 是唯一权威，下游不要按长度重新推断。dsh 侧由页面注入器写进
+最近活跃会话。
 
 ```jsonc
-{ "type": "page", "tab": { "url": "https://…", "title": "…", "content": "页面正文…" } }
+{ "type": "page", "tab": { "url": "https://…", "title": "…", "content": "页面正文…", "truncated": false } }
 ```
 
 ### `ping`
@@ -37,12 +48,40 @@ Chrome 扩展的 service worker 与 dsh 侧的桥接插件（`host/bridge.js`）
 动作：`get_page`、`list_tabs`、`navigate {url}`、`click {selector}`、
 `open_tab {url}`、`start_capture`、`stop_capture`、`capture_requests`。
 
+几个动作的 `result` 形状：
+
+- `get_page` → `{url, title, text, truncated, links:[{text,href}]}`。
+  注意正文字段叫 **`text`**（不是 `page` 帧里的 `content`），上限 40,000
+  字符、400 条链接，与 `page` 帧的 1,000,000 字符是两套限额。
+- `list_tabs` → `[{id, url, title, active}]`。
+- `click` → 成功时 `clicked` 只有两种取值：`true`（点到了，随 `text` 给出
+  元素文本片段），或 `"unknown"`——扩展无法确定点击是否已经发生（多半是
+  点击自身触发了导航、结果在回传前丢失），此时随 `reason`（机器可读，
+  目前只有 `"result_lost"`）与 `detail`（原始错误文本）。点击不是幂等操作，
+  这种情况下扩展绝不重试，宿主侧的 `browser_click` 负责把它翻译成给智能体
+  看的提示。「没有元素匹配」与其它确定性失败都不走 `result`，而是以
+  `ok:false` + `error` 返回（即上面 `result` 帧的第二个例子）。
+- `capture_requests` → `{tabId, capturing, count, entries}`；宿主侧对
+  `entries` 逐条脱敏，无法识别的字段会被丢弃并记入该条的 `droppedFields`。
+
+### `graph-changed`
+dsh 模块图变化（装/删插件行）时向所有已连接的扩展广播，无 `id`、无应答；
+扩展收到后刷新侧栏里内嵌的 dsh 页面。为避免刚启动就刷一次，启动后 5 秒内
+的初始建图不广播。
+
+```jsonc
+{ "type": "graph-changed" }
+```
+
 ### `pong`
 对 `ping` 的应答。
 
 ## 智能体侧（dsh 内部，非线上协议）
 
-- `host/browser-tools.js`：注册 `browser_*` 工具；会改变浏览器状态的
-  动作需要"本轮用户真实消息含浏览器意图关键词"才放行。
+- `host/browser-tools.js`：注册 `browser_*` 工具。需要“本轮用户真实消息含
+  关键词”才放行的只有四个：`navigate`/`click`/`open_tab` 看
+  `INTENT_PATTERN`，`start_capture` 看另一套 `CAPTURE_PATTERN`；
+  `stop_capture` 与 `capture_requests` 不设门槛。两套关键词都定义在
+  `host/intent-gate.js`。
 - `host/page-injector.js`：把 `page` 推送写成一条 `source.kind === "plugin"`
   的"当前页面"消息，注入最近活跃会话；这类消息不能解锁浏览器动作。

@@ -7,9 +7,10 @@ approvals, tasks, goals, workspaces — everything) and lets the dsh agent
 **perceive and drive your browser**:
 
 - **Sees the current page automatically.** After you switch tabs or navigate
-  (SPA routes included), the "current page" (URL, title, body text, 1 MB cap)
-  is injected into your most recently active session, so the agent knows what
-  you are looking at.
+  (SPA routes included), the "current page" (URL, title, body text, capped at
+  1,000,000 characters) is injected into your most recently active session, so
+  the agent knows what you are looking at. Only `http(s)` tabs are injected
+  this way.
 - **Reads HTTP traffic on request.** When you ask it to, the agent starts a
   capture (`browser_start_capture`) and records the active tab's request
   method, URL, status, request body and response body via the Chrome DevTools
@@ -19,8 +20,14 @@ approvals, tasks, goals, workspaces — everything) and lets the dsh agent
   `browser_open_tab`.
 - **Approval-free, with tool-level intent unlock.** State-changing actions run
   only when the current turn was started by a real message from you that
-  contains explicit browser intent ("open / go to / click / navigate" or
-  "capture"). An instruction hidden inside a web page cannot drive the browser
+  contains explicit browser intent. The words that unlock
+  `browser_navigate` / `browser_click` / `browser_open_tab` are **open,
+  navigate, click, visit, tab** (打开 / 跳转 / 前往 / 点击 / 导航 / 访问 /
+  浏览一下 / 新标签), plus **"go to"** when it is followed by a page or URL
+  (`go to github.com`, `go to the page` — a bare `go to the next step` does
+  not unlock anything); the words that unlock `browser_start_capture` are
+  **capture, debug** (抓包 / 抓一下 / 抓取请求 / 监听网络 / 网络请求 / 流量).
+  An instruction hidden inside a web page cannot drive the browser
   (best-effort protection in approval-free mode, not an absolute guarantee).
 - While capturing, Chrome shows a "debugging this browser" banner (it
   disappears when capture stops).
@@ -29,7 +36,7 @@ approvals, tasks, goals, workspaces — everything) and lets the dsh agent
 
 - `dsh web` running locally (default `http://127.0.0.1:3080`; configurable in
   the extension's settings).
-- Chrome 116+.
+- Chrome 118+ (the extension relies on `InjectionResult.error`, added in Chrome 118).
 
 ## Install
 
@@ -59,9 +66,14 @@ shows the remaining steps:
 2. Click **Load unpacked** and select the printed directory.
 3. Click the **dsh-chrome** toolbar icon to open the side panel.
 
-Re-run `npx dsh-chrome install` after upgrading the package to refresh the
-extension files. `npx dsh-chrome path` prints the directory;
-`npx dsh-chrome uninstall` removes it.
+**Re-run `npx dsh-chrome install` after upgrading the package**, then reload
+the extension at `chrome://extensions` — the installer copies the files, so
+without both steps Chrome keeps running the previous version against the new
+host plugins. `npx dsh-chrome path` prints the directory.
+
+To remove dsh-chrome completely, undo both halves: `npx dsh-chrome uninstall`
+deletes the extension directory (then remove it in `chrome://extensions`), and
+`dsh plugin --profile web remove dsh-chrome` unwires the host plugins.
 
 ## Usage
 
@@ -102,17 +114,27 @@ agent the ability to read pages, capture traffic, and drive your browser.
 | `extension/` | Chrome MV3 extension (side panel + service worker + options page) |
 | `host/` | Three dsh host plugins: `bridge.js` (WS bridge), `browser-tools.js` (agent tools + redaction), `page-injector.js` |
 | `host/redact.js` | Credential redaction for captured traffic |
+| `host/intent-gate.js` | Intent-unlock keywords + turn-text extraction (shared with `tools/verify-intent.cjs`) |
 | `cordis.patch.yml` | Bundle patch that mounts the three host plugins |
 | `bin/cli.js` | `dsh-chrome` installer for the extension files |
 | `docs/bridge-protocol.md` | Wire protocol between the extension and dsh |
 
 ## Notes & limits
 
-- All browser tools (capture included) act on the **active tab** only.
+- Browser tools that read or manipulate page state (capture included) act on
+  the **active tab** only; `browser_list_tabs` and `browser_open_tab` are the
+  natural exceptions.
 - Capture retains a rolling last 500 entries; each request/response body and
-  the injected page body share a 1 MB cap.
-- Page-change detection: tab switch / main-frame navigation, ~2 s debounce;
-  scrolling does not trigger it.
+  the automatically injected page body are capped at 1,000,000 characters.
+  `browser_get_page` — the on-demand read — is a **separate, smaller** limit:
+  ~40,000 characters of visible text and up to 400 links.
+- Page-change detection: tab switch / main-frame navigation / SPA route change
+  (`history.pushState`), ~2 s debounce; scrolling does not trigger it. The
+  current page is also re-sent once whenever the bridge reconnects.
+- `browser_click` never retries. If a click navigates the page and the result
+  is lost, the tool reports `clicked: "unknown"` rather than clicking again —
+  clicking is not idempotent — and the agent is told to re-read the page with
+  `browser_get_page` to confirm what happened.
 - **The extension's own side-panel UI is currently Chinese only** (the top-bar
   labels: bridge status, "stop capture", settings). The embedded dsh web UI
   follows dsh's own locale; only this thin extension chrome is not yet
@@ -123,8 +145,11 @@ agent the ability to read pages, capture traffic, and drive your browser.
   (`http://127.0.0.1:9222`) when ordinary injection fails. This requires the
   browser to be launched with `--remote-debugging-port=9222` (and
   `--remote-allow-origins=chrome-extension://<this-extension-id>` if the remote
-  endpoint enforces the Origin check). When the CDP endpoint is absent, the
-  fallback simply returns `null` and normal pages keep working.
+  endpoint enforces the Origin check). If the CDP endpoint is missing or
+  unreachable, reading such a page fails with an explicit error naming the
+  flag — it is not silently empty. This fallback applies only to the on-demand
+  `browser_get_page` / `browser_click`; ordinary pages never take this path,
+  and automatic "current page" injection is limited to `http(s)` tabs.
 
 ## License
 

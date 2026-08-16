@@ -14,11 +14,13 @@
     - id: dsh-chrome-bridge
       name: 'dsh-chrome/host/bridge.js'
 
+    # redactCredentials defaults to true; set it false to capture raw, unmasked
+    # traffic (see host/redact.js). Trusted, local debugging only.
+    # Uncomment the two lines below to change it:
     - id: dsh-chrome-browser-tools
       name: 'dsh-chrome/host/browser-tools.js'
       # config:
-      #   redactCredentials: true   # default; set false to capture raw traffic
-      #   (see host/browser-tools.js). Trusted, local debugging only.
+      #   redactCredentials: false
 
     - id: dsh-chrome-page-injector
       name: 'dsh-chrome/host/page-injector.js'
