@@ -3,10 +3,14 @@
 All notable changes to `dsh-chrome` are documented here. This project follows
 [semantic versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.3
 
 Seven review rounds over the 0.1.2 follow-up work. Bullets describe the end
 state, not the path taken.
+
+**Upgrading:** re-run `npx dsh-chrome install` and reload the extension at
+`chrome://extensions` — the host plugins and the extension must move together,
+and the installer copies rather than links.
 
 ### Security
 
