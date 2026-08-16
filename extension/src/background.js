@@ -112,7 +112,12 @@ function connectBridge() {
       wasDown = false;
       toPanel({ type: "reload-gui" });
     }
-    pushCurrentPage().catch(() => {}); // 桥接恢复时补发一次当前页面
+    // 桥接恢复时补发一次当前页面。必须先清掉去重记录：dsh 侧在最后一个
+    // socket 断开时就丢掉了 currentPage（见 host/bridge.js），所以哪怕页面
+    // 没变也得重发一遍，否则 dsh 重启后智能体就一直不知道你在看什么，
+    // 直到你碰巧导航到别处为止。
+    lastPushed = null;
+    pushCurrentPage().catch(() => {});
   };
   sock.onmessage = (event) => {
     let msg;

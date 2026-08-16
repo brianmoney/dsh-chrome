@@ -134,7 +134,10 @@ Follow-up fixes to the 0.1.2 code-review round:
   triggering full re-extraction of the *active* page. Navigation events now
   only schedule a push for the active tab, and a push whose URL and body length
   are unchanged is skipped — `replaceState` loops were re-injecting an
-  identical up-to-1 MB message each time.
+  identical up-to-1 MB message each time. The dedup memory is cleared on bridge
+  reconnect, because the host drops its cached page when the last socket
+  closes; without that, a restarted `dsh web` would never be told what page you
+  are on until you happened to navigate elsewhere.
 - **captured bodies**: cap them with a flattening copy, so a 50 MB response no
   longer stays pinned in memory behind a 1 MB `slice` view for the lifetime of
   the tab (up to 500 entries each).
