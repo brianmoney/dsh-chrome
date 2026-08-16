@@ -5,165 +5,70 @@ All notable changes to `dsh-chrome` are documented here. This project follows
 
 ## Unreleased
 
-Follow-up fixes to the 0.1.2 code-review round:
+Seven review rounds over the 0.1.2 follow-up work. Bullets describe the end
+state, not the path taken.
 
-- **redaction hang (security)**: the form-body shape check
-  (`^[^\s]*=[^\s]*(?:&[^\s]*=[^\s]*)*$`) nests quantifiers that also match the
-  separators, so a ~90-byte form-shaped body with trailing whitespace
-  backtracked for tens of seconds — measured 18.7 s at 85 bytes, growing ~2.6x
-  per added field — synchronously stalling the whole dsh host. The line is old,
-  but the redaction fix below is what first put captured (page-controlled)
-  bodies through it. Replaced with two linear scans, and `redactBody` now
-  short-circuits on bodies that mention no secret-ish key at all *and* contain
-  no escape sequence that could spell one (`%74oken`, `token`) — keys are
-  compared after decoding, so a raw-text scan alone would have narrowed what
-  gets masked. Roughly 6x faster on the common case, skipping the
-  parse/deep-clone/re-stringify entirely.
+### Security
 
-- **intent gate fails closed (security)**: when no `turn/start` event could be
-  found, the turn-text extractor fell through to scanning the entire session,
-  so a browser keyword typed in turn 1 kept the gate unlocked for every later
-  turn — and an instruction hidden in an injected page could act on it. It now
-  returns empty (denying the action) when the turn cannot be identified. This
-  bug predates the extraction into `host/intent-gate.js`.
-- **intent keywords narrowed**: "go to" only unlocks when followed by a page or
-  URL (`go to github.com`, `go to the page`), so "go to line 200" / "go to the
-  next step" no longer do; bare `goto` (a programming keyword) was dropped; and
-  `tab` no longer matches inside "tab-separated".
+- **Captured traffic was never redacted.** The transform only handled a bare
+  array, but `capture_requests` replies with
+  `{tabId, capturing, count, entries}`, so secrets reached the model unmasked
+  even though `redactCredentials` defaults on. Redaction now fails closed:
+  an unrecognisable envelope throws, and both the envelope and each entry are
+  projected onto allowlists so an unknown field is dropped rather than
+  forwarded, and named in `droppedFields`. The fast-path pre-filter is derived
+  from the same key-name list as the matcher, so it cannot narrow what gets
+  masked — including keys spelled with escapes (`%74oken`, `\u0074oken`).
+- **A redaction pattern could hang the host.** The form-body shape check
+  nested quantifiers that also matched the separators, so a ~90-byte
+  form-shaped body with trailing whitespace backtracked for tens of seconds
+  (measured 18.7 s at 85 bytes) and stalled the single-threaded dsh host.
+  Replaced with linear scans. Captured bodies are page-controlled, so patterns
+  applied to them must stay linear.
+- **The intent gate failed open.** With no `turn/start` event found it scanned
+  the entire session, so a browser keyword typed in turn 1 kept the gate
+  unlocked indefinitely and an injected page could act on it. It now denies
+  when the turn cannot be identified, and `isUnlocked` throws on an
+  unrecognised gate kind instead of treating it as ungated.
 
-- **redaction (security)**: actually redact captured traffic — the 0.1.2
-  transform only handled a bare array, but `capture_requests` returns
-  `{tabId, capturing, count, entries}`, so redaction never ran and secrets
-  reached the model unmasked. Redaction now lives in `host/redact.js` and fails
-  closed at two levels: `redactCaptureResult` raises an error on an
-  unrecognised reply envelope, and `redactEntry` projects each entry onto an
-  allowlist — a field it does not know is dropped rather than forwarded
-  unmasked, and named in that entry's `droppedFields`, so extension/host
-  version skew degrades instead of erroring the whole tool. The envelope is
-  allowlisted the same way, so an added top-level field cannot carry a URL or
-  body past redaction either.
-- **intent-unlock**: allow common English inflections ("opening", "clicking",
-  "tabs", "capturing", "debugging") that the 0.1.2 `\b` anchoring accidentally
-  rejected, while keeping the substring protection ("table"/"reopen"/
-  "database" still don't unlock); sync `tools/verify-intent.cjs` with the
-  production pattern. Standalone 抓取 stays excluded from the capture gate
-  (it is ordinary "scrape/fetch" — a read intent).
-- **CDP fallback**: the 5 s endpoint timeout now also bounds the response-body
-  read (was disarmed once headers arrived); non-JSON responses get a clear
-  error. Target selection no longer guesses from URLs: it joins
-  `chrome.debugger.getTargets()` (which exposes each target's `tabId` and
-  DevTools id) against `/json/list` by target id, so the right tab is
-  identified even when two tabs share a URL, the URL drifts mid-navigation, or
-  an iframe (such as the side panel's own embedded dsh UI) shares the address.
-  The URL fallback, used only when `getTargets()` is unavailable, is
-  exact-match, excludes iframe targets, and still fails safe on ambiguity.
-- **get_page**: CDP errors (endpoint missing, target not listed, timeout) now
-  surface as tool errors instead of a silent `ok: true` with a null page. The
-  CDP fallback runs only when Chrome refused the injection outright (the page
-  cannot be scripted at all); every other injection failure reports the real,
-  usually retryable error rather than a misleading "start the browser with
-  --remote-debugging-port" message.
-- **click**: never retried — a click is not idempotent. A click is reported as
-  `clicked: "unknown"` (with a note to verify via `browser_get_page`) whenever
-  the extension cannot tell whether it fired, including when the frame is torn
-  down by the click's own navigation. An in-page exception (e.g. a malformed
-  selector, which Chrome surfaces in the injection result's `error` field
-  rather than by rejecting) is now correctly reported as "no click happened".
-  The CDP fallback runs only when injection was rejected outright
-  (cross-extension page etc., where the click cannot have happened).
-- **page scrape / click scripts**: the injected and CDP copies of both scripts
-  were separate implementations that had already diverged (`document.body?.
-  innerText` vs a ternary, differing on a null `innerText`). Both paths now
-  serialize one shared top-level function.
-- **intent gate**: the keyword patterns and the `currentTurnUserText` extractor
-  moved to `host/intent-gate.js`, imported by both `browser-tools.js` and
-  `tools/verify-intent.cjs`, which previously kept hand-copied duplicates of
-  both halves that had drifted from production.
-- **page push**: check the bridge socket before scraping — with dsh not
-  running, every tab switch and navigation was paying for a full page
-  extraction whose result was then discarded.
-- **removed dead code**: the service worker registered a `composer-history`
-  content script (`src/composer-history.js`, an ↑/↓ input-history feature) that
-  has never existed in this package, so the registration failed silently on
-  every startup and on every settings change. Dropped the registration; the
-  `dsh_url` settings listener still reloads the address.
-- **page cap**: align the host-side page-body cap with the extension's
-  (1,000,000 chars, was 1,048,576) and enforce it at the bridge entry point,
-  flattening the sliced string so an oversized push can't stay pinned in
-  memory. Truncation is now reported end-to-end via an explicit `truncated`
-  flag on the `page` frame (a body cut to exactly the cap is indistinguishable
-  from a complete one by length), and the injected message says
-  "[page body truncated]" instead of presenting a cut body as complete. The
-  bridge is the only module that caps page bodies or decides that flag;
-  everything downstream just consumes `page.truncated`.
-- **SPA routes**: `history.pushState` navigations fire
-  `webNavigation.onHistoryStateUpdated`, not `onCommitted`, so single-page-app
-  route changes never triggered a page push despite both READMEs and the
-  code's own comment claiming SPA support. Added the missing listener.
-- **intent keywords**: "go to" / "goto" / 前往 now unlock browser actions.
-  Both the README and the agent's system prompt offered "go to" as an example,
-  but the pattern never matched it, so following the documented example got
-  you a refusal.
-- **CDP target lookup**: a target id that `chrome.debugger.getTargets()` knows
-  but `/json/list` does not now falls through to URL matching instead of
-  erroring. `/json/list` omits `webSocketDebuggerUrl` for targets that already
-  have a debugger attached — i.e. right after `browser_start_capture`, or with
-  DevTools open on that tab — where the old code reported the misleading "port
-  9222 may belong to another browser instance".
-- **click (CDP path)**: a lost `Runtime.evaluate` reply (timeout or dropped
-  connection after the request was sent) now reports `clicked: "unknown"` like
-  the injection path, instead of reporting failure and inviting the agent to
-  click a second time. Errors raised before the expression was sent still
-  report failure, since the click provably did not happen.
-- **page push**: skip tabs whose `url` is empty (not yet committed) rather than
-  falling through the `http(s)` guard and scraping them.
-- **extension**: sync `manifest.json` version with `package.json`, and raise
-  `minimum_chrome_version` to 118 — `InjectionResult.error`, which the click
-  and scrape paths rely on to tell "threw in-page" from "no frame result",
-  only exists from Chrome 118.
-- **extension internals**: `scrapeTab` and `clickTab` were the same
-  inject → classify → maybe-fall-back-to-CDP state machine written twice (an
-  earlier round had deduplicated only the page-side function bodies), and had
-  already drifted. Both now go through one `runInPage` returning an explicit
-  `ok` / `failed` / `indeterminate` status, and each applies its own policy:
-  a scrape can be retried so it reports failure, a click cannot so it reports
-  `clicked: "unknown"`. Whether a page can be scripted at all is now decided
-  structurally from the tab URL (`injectable()`) rather than by regex-matching
-  Chrome's English error prose, which was driving a safety decision.
-- **click result**: the extension now emits the bare fact
-  (`clicked: "unknown"` plus a machine-readable `reason`); the agent-facing
-  wording is rendered host-side in `browser_click`, in the same language as the
-  rest of that tool's prose.
-- **SPA page pushes**: `onHistoryStateUpdated` fires for background tabs too,
-  so a `pushState`-heavy app in an unfocused tab (Gmail, Slack, Jira…) was
-  triggering full re-extraction of the *active* page. Navigation events now
-  only schedule a push for the active tab, and a push whose URL and body length
-  are unchanged is skipped — `replaceState` loops were re-injecting an
-  identical up-to-1 MB message each time. The dedup memory is cleared on bridge
-  reconnect, because the host drops its cached page when the last socket
-  closes; without that, a restarted `dsh web` would never be told what page you
-  are on until you happened to navigate elsewhere.
-- **captured bodies**: cap them with a flattening copy, so a 50 MB response no
-  longer stays pinned in memory behind a 1 MB `slice` view for the lifetime of
-  the tab (up to 500 entries each).
-- **intent gate**: `host/intent-gate.js` now exports the whole decision
-  (`isUnlocked`), plus `textOf` and the user-facing keyword list, so the tools
-  layer, the system prompt, and `tools/verify-intent.cjs` all consume one
-  implementation instead of re-composing it. `go to tab-separated data` no
-  longer unlocks (the `go to` object list was overriding the `tab-separated`
-  exclusion).
-- **tools**: extracted the zstd session-log reader both diagnostic scripts had
-  copied into `tools/session-log.cjs`. `dump-session.cjs` read the assistant payload shape for user
-  messages, so its no-argument default mode printed nothing at all; it now
-  accepts both shapes (matching `intent-gate.js`) and takes seq numbers or a
-  `from-to` range on the command line instead of hardcoding one past session's.
-- Docs: brought the docs back in line with the code after the rounds above —
-  corrected the `click` result shape and documented the `graph-changed` frame
-  in `docs/bridge-protocol.md`; fixed stale claims in both READMEs (the CDP
-  fallback no longer "returns null", `browser_get_page`'s 40,000-char limit is
-  not the 1 MB injection cap, the unlocking keyword list); restored
-  README.md/README.zh.md parity; and refreshed the file-header comments and
-  `CLAUDE.md` invariants that the refactors had invalidated.
+### Browser control
+
+- **Clicks are never retried.** `runInPage` reports `ok` / `failed` /
+  `indeterminate`; a click that may already have fired returns
+  `clicked: "unknown"` (rendered host-side into agent-facing prose) instead of
+  being retried on the destination page. Scrapes, which are safe to repeat,
+  still treat `indeterminate` as failure.
+- **CDP target selection** joins `chrome.debugger.getTargets()` by target id
+  rather than guessing from URLs, falling back to URL matching when the id is
+  absent (targets with a debugger already attached omit it). Transport is
+  chosen structurally from the tab URL, never from Chrome's error prose.
+- **`browser_get_page`** surfaces CDP errors instead of returning `ok: true`
+  with a null page, and no longer routes ordinary pages through CDP.
+- **SPA routes** (`history.pushState`) fire `onHistoryStateUpdated`, not
+  `onCommitted`, so single-page navigation never triggered a page push. Added
+  the listener, scoped page pushes to the active tab, and skipped pushes whose
+  URL and body length are unchanged — except on bridge reconnect, where the
+  host has dropped its cached page and needs it again.
+- **Intent keywords**: common inflections unlock ("opening", "clicking",
+  "capturing"); `go to` unlocks only before a page or URL, so "go to line 200"
+  does not; `tab` does not match inside "tab-separated"; standalone 抓取
+  ("scrape/fetch") still does not unlock capture.
+- **`minimum_chrome_version` is now 118** — `InjectionResult.error`, which the
+  click and scrape paths depend on, does not exist before it.
+
+### Structure
+
+- One intent gate owning patterns, turn-text extraction, the `isUnlocked`
+  decision and the user-facing keyword strings (`host/intent-gate.js`); one
+  page-script dispatcher shared by scrape and click; one session-log reader for
+  both `tools/` scripts; one pair-masking helper in `redact.js`. Each replaced
+  a duplicate that had already drifted.
+- Page-body capping and the `truncated` decision live only in `host/bridge.js`;
+  everything downstream consumes the flag. Oversized slices are flattened so a
+  50 MB push cannot stay pinned behind a 1 MB view.
+- Removed a `composer-history` content-script registration for a file that has
+  never existed in this package.
+- Docs, protocol spec and file headers brought back in line with the code.
 
 ## 0.1.2
 

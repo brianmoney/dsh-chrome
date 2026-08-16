@@ -132,24 +132,29 @@ agent the ability to read pages, capture traffic, and drive your browser.
   (`history.pushState`), ~2 s debounce; scrolling does not trigger it. The
   current page is also re-sent once whenever the bridge reconnects.
 - `browser_click` never retries. If a click navigates the page and the result
-  is lost, the tool reports `clicked: "unknown"` rather than clicking again —
-  clicking is not idempotent — and the agent is told to re-read the page with
-  `browser_get_page` to confirm what happened.
+  is lost, the tool reports that it could not confirm whether the click took
+  effect, rather than clicking again — clicking is not idempotent — and tells
+  the agent to re-read the page with `browser_get_page` to see what happened.
+- Page pushes are deduplicated: a navigation whose URL and body length match
+  the previous push sends nothing. The bridge reconnecting always re-sends,
+  since dsh drops its cached page when the connection closes.
 - **The extension's own side-panel UI is currently Chinese only** (the top-bar
   labels: bridge status, "stop capture", settings). The embedded dsh web UI
   follows dsh's own locale; only this thin extension chrome is not yet
   translated. Planned for a future release.
-- **Reading `chrome-extension://` pages** (e.g. another extension's options page):
-  `chrome.scripting` and `chrome.debugger` are both blocked from cross-extension
-  access, so the worker falls back to the browser's **remote debugging protocol**
-  (`http://127.0.0.1:9222`) when ordinary injection fails. This requires the
-  browser to be launched with `--remote-debugging-port=9222` (and
+- **Reading pages Chrome won't let extensions script** — `chrome-extension://`
+  (another extension's options page), `chrome://`, `file://`, and the Chrome
+  Web Store. The worker decides this **from the tab's URL before trying**, and
+  routes those pages to the browser's **remote debugging protocol**
+  (`http://127.0.0.1:9222`) instead. This requires the browser to be launched
+  with `--remote-debugging-port=9222` (and
   `--remote-allow-origins=chrome-extension://<this-extension-id>` if the remote
   endpoint enforces the Origin check). If the CDP endpoint is missing or
   unreachable, reading such a page fails with an explicit error naming the
-  flag — it is not silently empty. This fallback applies only to the on-demand
-  `browser_get_page` / `browser_click`; ordinary pages never take this path,
-  and automatic "current page" injection is limited to `http(s)` tabs.
+  flag — it is not silently empty. Ordinary `http(s)` pages never take this
+  path, even when injection fails on them, and automatic "current page"
+  injection covers only ordinary `http(s)` tabs (the Web Store included in the
+  exclusions).
 
 ## License
 

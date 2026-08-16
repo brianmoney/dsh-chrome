@@ -111,21 +111,23 @@ npx dsh-chrome install
   约 40,000 字符正文、最多 400 条链接。
 - 页面变化判定：标签切换 / 主框架导航 / SPA 路由变化（`history.pushState`），
   防抖约 2 秒；滚动不触发。此外桥接每次重连成功后会补推一次当前页面。
-- `browser_click` 绝不重试：若点击导致页面导航、结果丢失，工具会报
-  `clicked: "unknown"` 而不是再点一次（点击不是幂等操作），并提示智能体用
-  `browser_get_page` 复核页面状态。
+- `browser_click` 绝不重试：若点击导致页面导航、结果丢失，工具会如实说明
+  “无法确认这次点击是否生效”，而不是再点一次（点击不是幂等操作），并提示
+  智能体用 `browser_get_page` 复核页面状态。
+- 页面推送会去重：URL 与正文长度都与上次相同就不再发帧。桥接重连时一定会
+  重发一次——dsh 在连接断开时丢掉了缓存的当前页面。
 - **扩展自身的侧栏界面目前仅有中文**（顶栏那几个标签：桥接状态、“停止抓包”、
   设置）。内嵌的 dsh 网页界面跟随 dsh 自己的语言设置；只有这层很薄的扩展外壳
   尚未翻译，计划在后续版本补上。
-- **读取 `chrome-extension://` 页面**（例如其它扩展的设置页）：`chrome.scripting`
-  与 `chrome.debugger` 都无法跨扩展访问（都会抛「Cannot access a
-  chrome-extension:// URL of different extension」），因此普通注入失败时，
-  worker 会回退到浏览器的**远程调试协议**（`http://127.0.0.1:9222`）。这要求
-  浏览器以 `--remote-debugging-port=9222` 启动（若远程端点做 Origin 校验，
-  还需 `--remote-allow-origins=chrome-extension://<本扩展ID>`）。当 CDP 端点
-  缺失或不可达时，读取这类页面会直接报错并指明该启动参数，而不是悄悄返回空。
-  该回退只用于按需的 `browser_get_page` / `browser_click`；普通页面不会走这条
-  路径，自动注入的“当前页面”也只覆盖 `http(s)` 标签页。
+- **读取 Chrome 不允许扩展注入脚本的页面**——`chrome-extension://`（例如其它
+  扩展的设置页）、`chrome://`、`file://` 以及 Chrome 应用商店。worker **在尝试
+  之前就按标签页 URL 判定**，把这类页面直接交给浏览器的**远程调试协议**
+  （`http://127.0.0.1:9222`）。这要求浏览器以 `--remote-debugging-port=9222`
+  启动（若远程端点做 Origin 校验，还需
+  `--remote-allow-origins=chrome-extension://<本扩展ID>`）。当 CDP 端点缺失或
+  不可达时，读取这类页面会直接报错并指明该启动参数，而不是悄悄返回空。
+  普通 `http(s)` 页面永远不会走这条路径（哪怕注入失败也不会），自动注入的
+  “当前页面”同样只覆盖普通 `http(s)` 标签页（应用商店同在排除之列）。
 
 ## 许可证
 

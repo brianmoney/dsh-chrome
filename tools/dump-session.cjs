@@ -3,7 +3,7 @@
 //   node tools/dump-session.cjs <session-file> 341001 341002 …
 //   node tools/dump-session.cjs <session-file> 341001-341006   （闭区间）
 //
-// 不给 seq 时，只打印一条"有实际文本"的用户消息作为样本。
+// 不给 seq 时，改为打印一条"有实际文本"的用户消息作为样本。
 
 const { readSessionEvents, loadIntentGate } = require("./session-log.cjs");
 
@@ -24,6 +24,7 @@ const { readSessionEvents, loadIntentGate } = require("./session-log.cjs");
     }
   }
 
+  if (want.size > 0) return;
   const sample = events.find((e) => e.type === "user/message" && textOf(e).trim().length > 5);
   if (sample) {
     console.log("===== 有文本的 user/message 样本 seq", sample.seq, "=====");

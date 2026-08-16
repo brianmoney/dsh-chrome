@@ -20,8 +20,10 @@ Chrome 扩展的 service worker 与 dsh 侧的桥接插件（`host/bridge.js`）
 ### `page`
 页面变化推送。三个触发点：标签切换、主框架导航、SPA 路由变化
 （`history.pushState` 等），前述三者防抖约 2 秒；此外桥接（重）连接成功时
-会立即补推一次，不防抖。非 `http(s)` 的标签页（`chrome://` 等）整个跳过，
-不发帧。
+会立即补推一次，不防抖。导航与 SPA 事件只有来自**当前活动标签页**时才排队
+（推的永远是活动标签页），且 URL 与正文长度都与上次相同的推送会被跳过——
+桥接重连时例外，一定重发。不可注入的标签页（非 `http(s)`，以及 Chrome 应用
+商店）整个跳过，不发帧。
 
 正文在扩展侧已按 1,000,000 字符的保护阀截断，截断时 `truncated` 为 true；
 桥接侧在正文长度达到上限时也会置 true（无论是否需要再截断，用于兼容不发
@@ -61,8 +63,12 @@ Chrome 扩展的 service worker 与 dsh 侧的桥接插件（`host/bridge.js`）
   这种情况下扩展绝不重试，宿主侧的 `browser_click` 负责把它翻译成给智能体
   看的提示。「没有元素匹配」与其它确定性失败都不走 `result`，而是以
   `ok:false` + `error` 返回（即上面 `result` 帧的第二个例子）。
-- `capture_requests` → `{tabId, capturing, count, entries}`；宿主侧对
-  `entries` 逐条脱敏，无法识别的字段会被丢弃并记入该条的 `droppedFields`。
+- `capture_requests` → `{tabId, capturing, count, entries}`，每条 entry 形如
+  `{id, seq, method, url, type, postData?, status, mimeType, body, time,
+  redirect?}`。宿主侧对 `entries` 逐条脱敏；信封与每条 entry 都按白名单投影，
+  认不出的字段会被丢弃并记入同级的 `droppedFields`（所以扩展新增字段时，
+  必须同步 `host/redact.js` 里的白名单，否则它会静默消失）。脱敏可用插件配置
+  `redactCredentials: false` 关掉，关掉后不做投影也不会有 `droppedFields`。
 
 ### `graph-changed`
 dsh 模块图变化（装/删插件行）时向所有已连接的扩展广播，无 `id`、无应答；

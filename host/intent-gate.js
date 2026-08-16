@@ -97,13 +97,26 @@ export function currentTurnUserText(events) {
  * 那一步同样是会漂移的逻辑：诊断脚本 tools/verify-intent.cjs 必须走完全
  * 相同的路径，否则它复现不了生产的放行/拦截结果。
  */
-export function isUnlocked(events, kind) {
-  const pattern = kind === "browser" ? INTENT_PATTERN : kind === "capture" ? CAPTURE_PATTERN : null;
+/** 门禁种类 → 关键词正则 + 面向用户的说明。加一类门禁只需在这里加一行。 */
+const GATES = new Map([
+  ["browser", { pattern: INTENT_PATTERN, doc: INTENT_KEYWORDS_DOC }],
+  ["capture", { pattern: CAPTURE_PATTERN, doc: CAPTURE_KEYWORDS_DOC }],
+]);
+
+/** 某类门禁的关键词说明；kind 认不出就抛错。 */
+export function gateDoc(kind) {
+  return requireGate(kind).doc;
+}
+
+function requireGate(kind) {
+  const gate = GATES.get(kind);
   // 认不出的 kind 一律抛错，绝不当成“没门槛”放行：不设门槛的工具由调用方
   // 自己不调用本函数来表达（intent: null），而不是把拼错的 kind 静默变成
   // 通行证——那会让一个 typo 就悄悄解除某个工具的门禁。
-  if (!pattern) {
-    throw new Error(`unknown intent kind ${JSON.stringify(kind)}; refusing to unlock`);
-  }
-  return pattern.test(currentTurnUserText(events));
+  if (!gate) throw new Error(`unknown intent kind ${JSON.stringify(kind)}; refusing to unlock`);
+  return gate;
+}
+
+export function isUnlocked(events, kind) {
+  return requireGate(kind).pattern.test(currentTurnUserText(events));
 }

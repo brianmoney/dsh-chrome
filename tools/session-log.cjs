@@ -9,12 +9,15 @@ const fs = require("node:fs");
 /** 按 zstd 魔数（28 b5 2f fd）切帧、解压、逐行解析 JSON，返回事件数组。 */
 function readSessionEvents(path) {
   const buf = fs.readFileSync(path);
-  const starts = [0];
+  const starts = [];
   for (let i = 3; i < buf.length; i++) {
     if (buf[i - 3] === 0x28 && buf[i - 2] === 0xb5 && buf[i - 1] === 0x2f && buf[i] === 0xfd) {
       starts.push(i - 3);
     }
   }
+  // 日志正常以魔数开头，扫描就会给出 0；只有在文件不是从帧边界开始时才需要
+  // 补一个 0（旧写法无条件预置 0，于是每次都多解压一个零长度的“帧”）。
+  if (starts[0] !== 0) starts.unshift(0);
   const frames = [];
   for (let k = 0; k < starts.length; k++) {
     const s = starts[k];

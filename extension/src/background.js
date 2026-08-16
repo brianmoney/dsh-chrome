@@ -188,8 +188,13 @@ function schedulePagePush() {
   }, 2000); // 防抖：快速连续导航只推最后一次
 }
 
-/** 只有活动标签页的导航才值得重抓——推的永远是活动标签页。 */
+/**
+ * 只有活动标签页的导航才值得重抓——推的永远是活动标签页。
+ * 先同步判掉桥接没连上的情况：SPA 路由事件非常密集，dsh 没运行时不该为
+ * 每一次都唤醒 worker 去查一次标签页。
+ */
 async function schedulePagePushFor(tabId) {
+  if (!bridgeOpen()) return;
   const tab = await activeTab();
   if (tab && tab.id === tabId) schedulePagePush();
 }
@@ -403,20 +408,24 @@ function callExpr(fn, ...args) {
 
 // 「这个页面根本不允许注入脚本」的结构性判据：只有 http(s) 页面能注入，
 // 且 Chrome 应用商店对所有扩展关闭。判据看 URL 而不是 Chrome 的英文错误
-// 文案——文案会随版本和语言变，而这条判断要决定“副作用到底发生了没有”，
+// 文案——文案会随版本和语言变，而这条判断要决定走注入还是走 CDP，
 // 押在会变的字符串上太脆。
-// 这些拒绝理由说明注入根本没能开始跑（标签页没了、站点权限是“点击时”、
-// 参数无法序列化…），副作用必然没发生。仅用于把 indeterminate 收窄成
-// failed，匹配不上就维持 indeterminate，所以文案变化不会导致误判。
-const INJECTION_NEVER_RAN =
-  /no tab with id|no frame with id|cannot access|cannot be scripted|could not be cloned|extensions gallery/i;
-const injectionNeverRan = (err) => INJECTION_NEVER_RAN.test(errMsg(err));
-
 const WEBSTORE_HOST = /^(?:chrome\.google\.com\/webstore|chromewebstore\.google\.com)/i;
 function injectable(url) {
   if (typeof url !== "string" || !/^https?:/i.test(url)) return false;
   return !WEBSTORE_HOST.test(url.replace(/^https?:\/\//i, ""));
 }
+
+// 可注入页面上注入仍被拒的少数理由，说明它根本没开始跑（标签页已经没了、
+// 站点权限被用户设成“点击时”），副作用必然没发生。
+//
+// 这里确实在匹配 Chrome 的英文文案，但方向和上面那条判据相反：它只把
+// indeterminate *收窄* 成 failed，匹配不上就维持 indeterminate（安全的那
+// 一侧），所以 Chrome 改文案最多让点击多报一次“不确定”，不会误判成
+// “没点到”而被重试。凡是 injectable() 已经挡掉的情形（chrome:// / 扩展页 /
+// 应用商店）都不列在这里——那些根本走不到这个 catch。
+const INJECTION_NEVER_RAN = /no tab with id|no frame with id|cannot access|cannot be scripted/i;
+const injectionNeverRan = (err) => INJECTION_NEVER_RAN.test(errMsg(err));
 
 /**
  * 在标签页里跑一段页内函数，先注入、必要时回退远程 CDP。
@@ -668,7 +677,11 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
         "Network.getResponseBody",
         { requestId: params.requestId }
       );
-      entry.body = capBody(base64Encoded ? "[base64] " + atob(body) : body);
+      // 先按上限截 base64 再解码：整段解一个几十 MB 的图片/字体响应，然后
+      // 扔掉除 1 MB 以外的全部，纯属浪费（4 个 base64 字符 → 3 字节）。
+      entry.body = capBody(
+        base64Encoded ? "[base64] " + atob(body.slice(0, Math.ceil(MAX_BODY / 3) * 4)) : body
+      );
     } catch {
       entry.body = "(响应体不可用)";
     }
