@@ -206,7 +206,17 @@ async function needActiveTab() {
 const CDP_PORT = 9222;
 
 async function cdpRemoteTargets() {
-  const res = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`);
+  // Bound the request: a wedged debugging endpoint must not hang the tool call.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5000);
+  let res;
+  try {
+    res = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`, { signal: ctrl.signal });
+  } catch (e) {
+    throw new Error(`CDP 端点不可达（${e && e.name === "AbortError" ? "超时" : "连接失败"}）——浏览器是否以 --remote-debugging-port=${CDP_PORT} 启动？`);
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     throw new Error(`CDP 端点不可用（HTTP ${res.status}）——浏览器是否以 --remote-debugging-port=${CDP_PORT} 启动？`);
   }
@@ -233,7 +243,8 @@ function cdpWsEvaluate(wsUrl, expression, timeoutMs = 10000) {
       if (m.id !== 1) return;
       clearTimeout(timer);
       try { ws.close(); } catch {}
-      if (m.result && m.result.exceptionDetails) reject(new Error(m.result.exceptionDetails.text || "CDP 求值异常"));
+      if (m.error) reject(new Error(m.error.message || "CDP 协议错误"));
+      else if (m.result && m.result.exceptionDetails) reject(new Error(m.result.exceptionDetails.text || "CDP 求值异常"));
       else resolve(m.result && m.result.result ? m.result.result.value : null);
     };
     ws.onerror = () => { clearTimeout(timer); reject(new Error("CDP WebSocket 连接失败")); };
@@ -245,10 +256,20 @@ async function cdpRemoteEvaluate(tabId, expression) {
   if (!tab || !tab.url) throw new Error("无法获取标签页 URL");
   const targets = await cdpRemoteTargets();
   const base = tab.url.split("#")[0];
-  const target = targets.find((t) => t.type === "page" && t.url && t.url.split("#")[0] === base)
-    || targets.find((t) => t.type === "page" && t.url && t.url.startsWith(base));
-  if (!target || !target.webSocketDebuggerUrl) throw new Error("未找到该标签页的 CDP 目标");
-  return cdpWsEvaluate(target.webSocketDebuggerUrl, expression);
+  // Match by exact URL among debuggable targets (those exposing a
+  // webSocketDebuggerUrl — which includes chrome-extension pages, not just
+  // type "page"). Fail safe rather than guess: error if zero or if ambiguous
+  // (multiple tabs on the same URL) so we never drive the wrong tab.
+  const candidates = targets.filter(
+    (t) => t.webSocketDebuggerUrl && t.url && t.url.split("#")[0] === base
+  );
+  if (candidates.length === 0) {
+    throw new Error(`未找到该标签页的 CDP 目标（${base}）——该页面可能未在远程调试中列出`);
+  }
+  if (candidates.length > 1) {
+    throw new Error(`有多个标签页匹配同一 URL（${base}），无法确定目标；请只保留一个后重试`);
+  }
+  return cdpWsEvaluate(candidates[0].webSocketDebuggerUrl, expression);
 }
 
 async function cdpScrapeTab(tabId, textLimit, maxLinks) {
@@ -361,9 +382,11 @@ async function handleAction(msg) {
           args: [p.selector],
         });
         if (result && result.clicked) return sendResult(msg.id, true, result, null);
-        if (result && !result.clicked) return sendResult(msg.id, false, null, result.reason || "点击失败");
+        // Injection ran (normal page) — report its result and do NOT fall
+        // through to CDP, even if the result came back empty/undefined.
+        return sendResult(msg.id, false, null, (result && result.reason) || "点击失败");
       } catch {
-        // 注入失败（扩展页等）→ 回退 CDP
+        // 注入被拒（跨扩展页面等）→ 回退 CDP（仅注入抛错时）
       }
       try {
         const sel = JSON.stringify(p.selector);

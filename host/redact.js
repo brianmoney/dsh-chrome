@@ -37,7 +37,13 @@ export function redactUrl(url) {
       const eq = pair.indexOf("=");
       if (eq === -1) return pair;
       const key = pair.slice(0, eq);
-      return isSecretKey(decodeURIComponent(key)) ? `${key}=${REDACTED}` : pair;
+      let decoded;
+      try {
+        decoded = decodeURIComponent(key);
+      } catch {
+        decoded = key; // malformed %-encoding: fall back to the raw key
+      }
+      return isSecretKey(decoded) ? `${key}=${REDACTED}` : pair;
     })
     .join("&");
   return base + "?" + params + (hash ? "#" + hash : "");

@@ -13,13 +13,19 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 export const name = "dsh-chrome-page-injector";
 export const inject = ["dshAgentBridge", "agents"];
 
+// Host-side cap on injected page body (defense in depth; the extension caps too).
+const MAX_CONTENT = 1024 * 1024; // 1 MB
+
 export function apply(ctx) {
   const bridge = ctx.get("dshAgentBridge");
   const agents = ctx.get("agents");
   let lastActiveSessionId = null;
 
   // 最近活跃会话 = 最近收到用户真实消息的会话。
-  ctx.on("session/event", (session, event) => {
+  // NOTE: single global browser connection → single-user/loopback assumption
+  // (see README "Trusted, local use only"). On a multi-session host this is
+  // last-writer-wins across sessions.
+  const offEvent = ctx.on("session/event", (session, event) => {
     try {
       if (event?.type === "user/message" && event.data?.source?.kind === "user") {
         lastActiveSessionId = session?.id ?? null;
@@ -42,7 +48,13 @@ export function apply(ctx) {
   }
 
   const off = bridge.onPage(injectPage);
-  ctx.effect(() => () => off(), "dsh-chrome-page-injector: page listener");
+  ctx.effect(
+    () => () => {
+      off();
+      offEvent?.(); // explicitly drop the session/event listener on dispose/reload
+    },
+    "dsh-chrome-page-injector: page listener"
+  );
 }
 
 function composePageText(page) {
@@ -52,8 +64,9 @@ function composePageText(page) {
   ];
   if (page.title) lines.push(`Title: ${page.title}`);
   if (page.content) {
+    const body = page.content.length > MAX_CONTENT ? page.content.slice(0, MAX_CONTENT) : page.content;
     lines.push("Body:");
-    lines.push(page.content);
+    lines.push(body);
     lines.push("[end of page body]");
   } else {
     lines.push("(page has no readable text)");

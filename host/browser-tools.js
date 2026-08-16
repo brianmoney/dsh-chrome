@@ -25,9 +25,11 @@ export const inject = ["tools", "dshAgentBridge", "systemPrompt"];
 
 // Browser-intent keywords (Chinese + English). A user message must match one
 // of these to unlock state-changing browser actions.
-const INTENT_PATTERN = /打开|跳转|点击|导航|浏览一下|新标签|访问|open|navigate|click|visit|tab/i;
-// Capture-intent keywords.
-const CAPTURE_PATTERN = /抓包|抓取请求|监听网络|网络请求|流量|抓一下|capture|debug|抓/i;
+// English keywords are \b-anchored so substrings don't unlock actions
+// ("table"/"database" must not match "tab", "reopen" must not match "open").
+const INTENT_PATTERN = /打开|跳转|点击|导航|浏览一下|新标签|访问|\b(?:open|navigate|click|visit|tab)\b/i;
+// Capture-intent keywords. (Lone 抓 dropped — too broad; keep 抓包/抓取/抓一下.)
+const CAPTURE_PATTERN = /抓包|抓取请求|抓一下|监听网络|网络请求|流量|\b(?:capture|debug)\b/i;
 
 /** All text of the real user message(s) (source.kind === "user") in this turn. */
 function currentTurnUserText(agent) {

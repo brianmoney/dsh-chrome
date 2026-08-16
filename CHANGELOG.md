@@ -3,10 +3,30 @@
 All notable changes to `dsh-chrome` are documented here. This project follows
 [semantic versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.2
 
-- Docs: note that the extension's own side-panel UI (top-bar labels) is
-  currently Chinese only; the embedded dsh web UI follows dsh's locale.
+Code-review fixes:
+
+- **redaction**: guard `redactUrl`'s `decodeURIComponent` so a malformed `%` in a
+  captured URL no longer throws and fails the whole `browser_capture_requests`
+  tool. (Redaction stays key-name based and best-effort by design — see README.)
+- **intent-unlock**: anchor the English keywords to word boundaries so substrings
+  ("table"/"reopen"/"database") no longer unlock state-changing browser actions;
+  drop the over-broad lone `抓`.
+- **page-injector**: explicitly drop the `session/event` listener on dispose, and
+  enforce the documented ~1 MB page-body cap host-side.
+- **bridge**: on dispose close the WebSocket server, clear sockets, and reset the
+  cached page; also reset it when the last browser socket disconnects, so a stale
+  page can't be injected after the browser is gone.
+- **CDP fallback**: add a fetch timeout (no more indefinite hangs), surface
+  protocol-level errors instead of resolving null, match the CDP target by exact
+  URL and fail safe on zero/ambiguous matches (never drive the wrong tab, and no
+  longer exclude chrome-extension targets by requiring type `page`), and stop
+  falling through to CDP on a normal page when injection returns no result.
+- **cli**: ignore a non-absolute `XDG_DATA_HOME`/`LOCALAPPDATA` (per XDG spec).
+- Docs: note that the extension's own side-panel UI (top-bar labels) is currently
+  Chinese only, and that redaction is best-effort (treat captured traffic as
+  sensitive).
 
 ## 0.1.1
 

@@ -84,6 +84,10 @@ agent the ability to read pages, capture traffic, and drive your browser.
   **masked as `«redacted»` by default**. To capture raw, unmasked traffic
   (e.g. for your own debugging), set `redactCredentials: false` on the
   `dsh-chrome-browser-tools` row in your profile's `cordis.patch.yml`.
+  - Redaction is **best-effort, not a guarantee**: it matches secrets by
+    common key names, so a secret under an unusual key, or in a URL path or an
+    unparseable/truncated body, can still pass through. **Treat captured
+    traffic as sensitive**, and only enable capture on sites you trust.
 - **Injected "current page" messages are labelled untrusted data**, and the
   agent is instructed never to execute instructions found inside them. The
   intent-unlock gate further prevents page content from triggering

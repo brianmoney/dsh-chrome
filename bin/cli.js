@@ -13,7 +13,7 @@
 //   dsh-chrome help        this text
 
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, isAbsolute } from "node:path";
 import { homedir, platform } from "node:os";
 import fs from "node:fs";
 
@@ -21,16 +21,22 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = join(__dirname, "..");
 const extensionSrc = join(pkgRoot, "extension");
 
+/** Use an env-provided dir only if it's an absolute path (per XDG spec); else fall back. */
+function absEnv(name, fallback) {
+  const v = process.env[name];
+  return v && isAbsolute(v) ? v : fallback;
+}
+
 /** Stable per-user directory Chrome will load the unpacked extension from. */
 function targetDir() {
   if (platform() === "win32") {
-    const base = process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local");
+    const base = absEnv("LOCALAPPDATA", join(homedir(), "AppData", "Local"));
     return join(base, "dsh-chrome", "extension");
   }
   if (platform() === "darwin") {
     return join(homedir(), "Library", "Application Support", "dsh-chrome", "extension");
   }
-  const base = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
+  const base = absEnv("XDG_DATA_HOME", join(homedir(), ".local", "share"));
   return join(base, "dsh-chrome", "extension");
 }
 

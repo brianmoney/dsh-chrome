@@ -31,7 +31,10 @@ export function apply(ctx) {
   const wss = new WebSocketServer({ noServer: true });
   wss.on("connection", (ws) => {
     sockets.add(ws);
-    ws.on("close", () => sockets.delete(ws));
+    ws.on("close", () => {
+      sockets.delete(ws);
+      if (sockets.size === 0) currentPage = null; // browser gone → drop stale page
+    });
     ws.on("error", () => {});
     ws.on("message", (data) => {
       let msg;
@@ -105,11 +108,16 @@ export function apply(ctx) {
       offGraph();
       disposer();
       for (const ws of sockets) ws.terminate();
+      sockets.clear();
       for (const p of pending.values()) {
         clearTimeout(p.timer);
         p.resolve({ ok: false, error: "bridge disposed" });
       }
       pending.clear();
+      currentPage = null; // don't let a stale page survive a disconnect/reload
+      try {
+        wss.close();
+      } catch {}
     },
     "dsh-agent-bridge: route"
   );
