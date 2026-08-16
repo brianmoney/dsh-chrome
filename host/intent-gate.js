@@ -1,9 +1,18 @@
 // 浏览器意图解锁门（宿主侧唯一权威实现）。
 //
-// 单独成模块是为了让 host/browser-tools.js 与 tools/verify-intent.cjs 共用
-// 同一份实现——关键词正则与“本轮用户真实消息文本”的提取逻辑两边都曾各自
-// 维护副本并发生过漂移，导致诊断脚本放行了生产环境实际拦截的输入。
-// 本模块不依赖任何 @deepseek-ai/* 包，因此可以被 CJS 脚本直接 import。
+// 本模块拥有门禁的全部组成部分：
+//   - INTENT_PATTERN / CAPTURE_PATTERN   两套关键词正则
+//   - textOf / currentTurnUserText       本轮用户真实消息的文本提取
+//   - GATES / requireGate / isUnlocked   种类登记表与最终判定
+//   - INTENT_KEYWORDS_DOC / CAPTURE_KEYWORDS_DOC / gateDoc(kind)
+//       面向用户的关键词说明——系统提示词直接引用前两者，工具被拦截时的
+//       拒绝语用 gateDoc(kind) 取对应那一套，免得给抓包工具举导航的例子。
+//
+// 之所以独立成模块：正则、提取逻辑、判定这三样都曾在 host/browser-tools.js
+// 与 tools/*.cjs 里各留一份副本并发生漂移，诊断脚本因此放行了生产实际拦截
+// 的输入。这里一份，别处只 import。
+// 本模块不依赖任何 @deepseek-ai/* 包，因此 tools/session-log.cjs 里的
+// loadIntentGate() 能从 CJS 脚本里直接 import 它——别给它加依赖。
 
 // 浏览器动作意图（中英）。英文关键词用 \b 锚定，避免子串误解锁
 // （"table"/"database" 不得匹配 "tab"，"reopen" 不得匹配 "open"），
@@ -89,14 +98,6 @@ export function currentTurnUserText(events) {
   return parts.join("\n");
 }
 
-/**
- * 门禁的最终判定：本轮用户消息是否解锁了某类浏览器动作。
- * kind 为 "browser"（navigate/click/open_tab）或 "capture"（start_capture）。
- *
- * 判定本身也放在这里，而不是让调用方各自「取文本 + 挑正则 + test」——
- * 那一步同样是会漂移的逻辑：诊断脚本 tools/verify-intent.cjs 必须走完全
- * 相同的路径，否则它复现不了生产的放行/拦截结果。
- */
 /** 门禁种类 → 关键词正则 + 面向用户的说明。加一类门禁只需在这里加一行。 */
 const GATES = new Map([
   ["browser", { pattern: INTENT_PATTERN, doc: INTENT_KEYWORDS_DOC }],
@@ -117,6 +118,14 @@ function requireGate(kind) {
   return gate;
 }
 
+/**
+ * 门禁的最终判定：本轮用户消息是否解锁了某类浏览器动作。
+ * kind 为 "browser"（navigate/click/open_tab）或 "capture"（start_capture）。
+ *
+ * 判定本身也放在这里，而不是让调用方各自「取文本 + 挑正则 + test」——
+ * 那一步同样是会漂移的逻辑：诊断脚本 tools/verify-intent.cjs 必须走完全
+ * 相同的路径，否则它复现不了生产的放行/拦截结果。
+ */
 export function isUnlocked(events, kind) {
   return requireGate(kind).pattern.test(currentTurnUserText(events));
 }

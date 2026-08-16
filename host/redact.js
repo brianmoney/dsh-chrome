@@ -13,9 +13,16 @@
 // stays useful for debugging without piping live credentials into the model.
 // Set the plugin's `redactCredentials: false` config to disable this.
 //
-// Redaction is an allowlist and fails closed: an unrecognised reply envelope
-// throws, and per-entry fields outside KNOWN_ENTRY_FIELDS are dropped (never
-// forwarded unmasked) and reported in the entry's `droppedFields`.
+// Redaction is an allowlist and fails closed. An unrecognisable reply envelope
+// throws; the envelope and every entry are then projected onto their allowlists
+// (KNOWN_ENVELOPE_FIELDS / KNOWN_ENTRY_FIELDS), so a field this module does not
+// know is dropped rather than forwarded unmasked, and named in the sibling
+// `droppedFields`. The fast-path pre-filter is DERIVED from the same key-name
+// list as the matcher, so it cannot narrow what gets masked.
+//
+// Captured bodies are page-controlled input on the host's single event loop:
+// every pattern applied to them must be linear. A nested-quantifier shape check
+// here once backtracked for tens of seconds on a ~90-byte body and stalled dsh.
 
 const REDACTED = "«redacted»";
 

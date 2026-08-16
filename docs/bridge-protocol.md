@@ -9,8 +9,8 @@ Chrome 扩展的 service worker 与 dsh 侧的桥接插件（`host/bridge.js`）
 ### `result`
 对一个 `action` 的应答。`ok:true` 时 `error` 为 `null`，`ok:false` 时
 `result` 为 `null`。`result` 的类型随动作而定：可能是对象（`get_page`、
-`click`）、数组（`list_tabs`）或人类可读的字符串（`navigate`、`open_tab`、
-`start_capture`、`stop_capture`）。
+`click`、`capture_requests`）、数组（`list_tabs`）或人类可读的字符串
+（`navigate`、`open_tab`、`start_capture`、`stop_capture`）。
 
 ```jsonc
 { "type": "result", "id": "…", "ok": true, "result": { … } }
@@ -64,8 +64,10 @@ Chrome 扩展的 service worker 与 dsh 侧的桥接插件（`host/bridge.js`）
   看的提示。「没有元素匹配」与其它确定性失败都不走 `result`，而是以
   `ok:false` + `error` 返回（即上面 `result` 帧的第二个例子）。
 - `capture_requests` → `{tabId, capturing, count, entries}`，每条 entry 形如
-  `{id, seq, method, url, type, postData?, status, mimeType, body, time,
-  redirect?}`。宿主侧对 `entries` 逐条脱敏；信封与每条 entry 都按白名单投影，
+  `{id, seq, method, url, type, postData?, status, mimeType, body?, time,
+  redirect?}`。`postData` 与 `body` 为空时整个字段不出现；`status` 与
+  `mimeType` 在 `Network.responseReceived` 到达前是 `null`。抓包缓冲区按
+  **标签页**保存，停止抓包只是不再记录，已记录的条目会留到标签页关闭为止。宿主侧对 `entries` 逐条脱敏；信封与每条 entry 都按白名单投影，
   认不出的字段会被丢弃并记入同级的 `droppedFields`（所以扩展新增字段时，
   必须同步 `host/redact.js` 里的白名单，否则它会静默消失）。脱敏可用插件配置
   `redactCredentials: false` 关掉，关掉后不做投影也不会有 `droppedFields`。

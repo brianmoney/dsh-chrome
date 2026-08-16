@@ -53,8 +53,17 @@ state, not the path taken.
   "capturing"); `go to` unlocks only before a page or URL, so "go to line 200"
   does not; `tab` does not match inside "tab-separated"; standalone 抓取
   ("scrape/fetch") still does not unlock capture.
+- **CDP endpoint hardening**: `/json/list` responses that are not JSON, or are
+  JSON but not an array, now produce a clear error naming
+  `--remote-debugging-port` instead of failing downstream on
+  `targets.find is not a function`; a read timeout is distinguished from a
+  connect timeout. Target selection prefers `type === "page"` again and always
+  excludes iframe targets — 0.1.2 had removed the `page` requirement to reach
+  extension pages, which let the side panel's own embedded dsh UI match.
 - **`minimum_chrome_version` is now 118** — `InjectionResult.error`, which the
-  click and scrape paths depend on, does not exist before it.
+  click and scrape paths depend on, does not exist before it. `manifest.json`
+  had also been left at 0.1.1 while the package shipped as 0.1.2; the two are
+  now bumped together.
 
 ### Structure
 
@@ -63,12 +72,23 @@ state, not the path taken.
   page-script dispatcher shared by scrape and click; one session-log reader for
   both `tools/` scripts; one pair-masking helper in `redact.js`. Each replaced
   a duplicate that had already drifted.
-- Page-body capping and the `truncated` decision live only in `host/bridge.js`;
-  everything downstream consumes the flag. Oversized slices are flattened so a
-  50 MB push cannot stay pinned behind a 1 MB view.
+- Page-body capping happens once per runtime — the extension at extraction, the
+  host at bridge ingress (it cannot trust a local client's cap). `host/bridge.js`
+  is the host-side authority for both the cap and the `truncated` flag, and
+  everything downstream, the page injector included, only consumes the flag.
+  Oversized slices are flattened so a 50 MB push cannot stay pinned behind a
+  1 MB view; captured request/response bodies get the same treatment, and
+  base64 bodies are truncated before decoding rather than after.
 - Removed a `composer-history` content-script registration for a file that has
   never existed in this package.
-- Docs, protocol spec and file headers brought back in line with the code.
+- `browser_stop_capture` is listed among the always-available tools in the
+  system prompt, and automatic page pushes skip the Chrome Web Store along with
+  the other pages Chrome won't let extensions script.
+- Added `CLAUDE.md` (repo guide for AI coding agents).
+- Docs, protocol spec and file headers brought back in line with the code —
+  including correcting the long-standing claim that capture is scoped "per
+  session": the buffer is per **tab**, reading it back is not intent-gated, and
+  it outlives stopping the capture.
 
 ## 0.1.2
 

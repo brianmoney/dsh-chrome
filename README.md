@@ -27,8 +27,12 @@ approvals, tasks, goals, workspaces — everything) and lets the dsh agent
   (`go to github.com`, `go to the page` — a bare `go to the next step` does
   not unlock anything); the words that unlock `browser_start_capture` are
   **capture, debug** (抓包 / 抓一下 / 抓取请求 / 监听网络 / 网络请求 / 流量).
-  An instruction hidden inside a web page cannot drive the browser
-  (best-effort protection in approval-free mode, not an absolute guarantee).
+  Note that 抓取 on its own does **not** unlock capture — it reads as ordinary
+  "fetch/scrape" intent; say 抓包 or 抓取请求. If an action is blocked you get
+  a refusal quoting the exact words that would unlock *that* tool, so you can
+  simply restate. An instruction hidden inside a web page cannot drive the
+  browser (best-effort protection in approval-free mode, not an absolute
+  guarantee).
 - While capturing, Chrome shows a "debugging this browser" banner (it
   disappears when capture stops).
 
@@ -88,9 +92,14 @@ deletes the extension directory (then remove it in `chrome://extensions`), and
 **Trusted, local use only.** The bridge and browser tools give a local dsh
 agent the ability to read pages, capture traffic, and drive your browser.
 
-- **Capture is opt-in per session** and only sees requests made after it
-  starts. HTTP **headers are not captured** (so Cookie / Set-Cookie /
-  Authorization headers never reach the model). The remaining credential
+- **Capture is opt-in per tab** and only sees requests made after it starts.
+  Two things to be aware of about its scope: stopping a capture stops
+  *recording* but keeps what was already recorded until the tab closes, and the
+  buffer is not scoped to the dsh session that started it — reading it back
+  (`browser_capture_requests`) is not intent-gated, so any session talking to
+  the same browser can read it. Only *starting* a capture requires your
+  explicit instruction. HTTP **headers are not captured** (so Cookie /
+  Set-Cookie / Authorization headers never reach the model). The remaining credential
   surface — secret-shaped URL query parameters (`?access_token=…`), request
   bodies (form/JSON logins) and tokens embedded in response bodies — is
   **masked as `«redacted»` by default**. To capture raw, unmasked traffic
@@ -100,6 +109,10 @@ agent the ability to read pages, capture traffic, and drive your browser.
     common key names, so a secret under an unusual key, or in a URL path or an
     unparseable/truncated body, can still pass through. **Treat captured
     traffic as sensitive**, and only enable capture on sites you trust.
+  - It does, however, fail closed on shape: if the extension and the host
+    disagree about the reply format (e.g. you upgraded the package but didn't
+    re-run `npx dsh-chrome install`), unrecognised fields are dropped rather
+    than forwarded unmasked, and an unrecognisable reply raises an error.
 - **Injected "current page" messages are labelled untrusted data**, and the
   agent is instructed never to execute instructions found inside them. The
   intent-unlock gate further prevents page content from triggering
@@ -118,6 +131,7 @@ agent the ability to read pages, capture traffic, and drive your browser.
 | `cordis.patch.yml` | Bundle patch that mounts the three host plugins |
 | `bin/cli.js` | `dsh-chrome` installer for the extension files |
 | `docs/bridge-protocol.md` | Wire protocol between the extension and dsh |
+| `tools/` | Dev-only diagnostics over dsh session logs (`verify-intent.cjs`, `dump-session.cjs`, shared `session-log.cjs`); not shipped to npm |
 
 ## Notes & limits
 
@@ -129,12 +143,15 @@ agent the ability to read pages, capture traffic, and drive your browser.
   `browser_get_page` — the on-demand read — is a **separate, smaller** limit:
   ~40,000 characters of visible text and up to 400 links.
 - Page-change detection: tab switch / main-frame navigation / SPA route change
-  (`history.pushState`), ~2 s debounce; scrolling does not trigger it. The
-  current page is also re-sent once whenever the bridge reconnects.
-- `browser_click` never retries. If a click navigates the page and the result
-  is lost, the tool reports that it could not confirm whether the click took
-  effect, rather than clicking again — clicking is not idempotent — and tells
-  the agent to re-read the page with `browser_get_page` to see what happened.
+  (`history.pushState` and `replaceState`), ~2 s debounce; scrolling does not
+  trigger it. Only the **active** tab's navigations count — a background tab
+  churning through SPA routes pushes nothing. The current page is also re-sent
+  whenever the bridge reconnects.
+- `browser_click` never retries. If the click's result is lost — the page
+  navigated away, or the injection/CDP call was cut off — the tool reports that
+  it could not confirm whether the click took effect, rather than clicking
+  again (clicking is not idempotent), and tells the agent to re-read the page
+  with `browser_get_page` to see what happened.
 - Page pushes are deduplicated: a navigation whose URL and body length match
   the previous push sends nothing. The bridge reconnecting always re-sends,
   since dsh drops its cached page when the connection closes.
@@ -142,7 +159,7 @@ agent the ability to read pages, capture traffic, and drive your browser.
   labels: bridge status, "stop capture", settings). The embedded dsh web UI
   follows dsh's own locale; only this thin extension chrome is not yet
   translated. Planned for a future release.
-- **Reading pages Chrome won't let extensions script** — `chrome-extension://`
+- **Reading and clicking pages Chrome won't let extensions script** — `chrome-extension://`
   (another extension's options page), `chrome://`, `file://`, and the Chrome
   Web Store. The worker decides this **from the tab's URL before trying**, and
   routes those pages to the browser's **remote debugging protocol**

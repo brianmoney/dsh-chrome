@@ -1,23 +1,27 @@
 // dsh-chrome browser-tools plugin (host side).
 //
 // Registers the browser_* tools on every dsh web session's agent:
-//   never gated:  browser_get_page / browser_list_tabs /
-//                 browser_capture_requests / browser_stop_capture
-//   INTENT_PATTERN gated:   browser_navigate / browser_click / browser_open_tab
-//   CAPTURE_PATTERN gated:  browser_start_capture
+//   never gated:      browser_get_page / browser_list_tabs /
+//                     browser_capture_requests / browser_stop_capture
+//   intent "browser": browser_navigate / browser_click / browser_open_tab
+//   intent "capture": browser_start_capture
 //   (stop_capture is deliberately ungated — stopping is always safe to allow.)
 //
 // Approval-free + tool-level "intent unlock":
 //   The four gated actions run only when the CURRENT turn was started by a real
-//   user message matching the corresponding keyword pattern (two different
-//   patterns — see host/intent-gate.js); otherwise the tool returns a refusal
-//   asking the user to restate intent. Injected "current page" messages have
+//   user message matching that gate's keywords. This module names the gate by
+//   kind ("browser"/"capture") and lets host/intent-gate.js own the patterns
+//   and the verdict (isUnlocked); a blocked tool's refusal quotes THAT gate's
+//   words via gateDoc(kind). Injected "current page" messages have
 //   source.kind === "plugin" and unlock nothing, so a stray instruction hidden
 //   in a web page cannot drive the browser (best-effort, not a hard guarantee).
 //
-// Credential redaction (config `redactCredentials`, default true):
-//   browser_capture_requests masks secret-shaped query params and body fields
-//   before returning captured traffic to the model. See host/redact.js.
+// This module is also where extension results become agent-facing English:
+//   - browser_capture_requests runs redaction (config `redactCredentials`,
+//     default true) over the captured traffic — see host/redact.js.
+//   - browser_click turns the extension's bare `clicked:"unknown"` fact into
+//     the never-retry advice the agent reads (CLICK_NEVER_RETRIED, shared with
+//     the system-prompt section so both can't drift).
 
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { redactCaptureResult } from "./redact.js";
