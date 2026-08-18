@@ -1,6 +1,6 @@
 # dsh-chrome — DeepSeek Harness browser companion
 
-English | [中文](README.zh.md)
+English | [中文](README-zh.md)
 
 A Chrome side panel that embeds the **full dsh web UI** (sessions, settings,
 approvals, tasks, goals, workspaces — everything) and lets the dsh agent

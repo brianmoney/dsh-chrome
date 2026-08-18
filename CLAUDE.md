@@ -55,4 +55,4 @@ The tools are approval-free, so these gates are the safety model. Each rule belo
 
 - Host plugins and the extension are ES modules; `tools/` scripts are CommonJS.
 - Comments and docs are bilingual, per file. Chinese: `bridge.js` (mostly), `intent-gate.js`, `page-injector.js` (mostly), everything under `extension/`, `tools/*.cjs`, `docs/bridge-protocol.md`. English: `browser-tools.js`, `redact.js`, `bin/cli.js`, `cordis.patch.yml`, `CHANGELOG.md`, `README.md`. Match the file you're editing rather than the directory.
-- `README.md` and `README.zh.md` are parallel translations — update both, in the same edit.
+- `README.md` and `README-zh.md` are parallel translations — update both, in the same edit.
