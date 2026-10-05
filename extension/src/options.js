@@ -8,7 +8,7 @@ async function load() {
 $("save").addEventListener("click", async () => {
   const url = $("dshUrl").value.trim().replace(/\/+$/, "") || "http://127.0.0.1:3080";
   await chrome.storage.local.set({ dsh_url: url });
-  $("saved").textContent = "已保存 — 关闭并重新打开侧栏生效";
+  $("saved").textContent = "Saved — close and reopen the side panel to apply";
 });
 
 load();

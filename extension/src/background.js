@@ -12,15 +12,17 @@
 //      标记）推给 dsh 侧，由页面注入器写进会话。只有活动标签页的导航会排队，
 //      URL 与正文长度都没变的推送会跳过（桥接重连时例外，一定重发）。
 //   5. 与侧栏之间的 port 通信（name "panel"）：广播桥接/抓包状态与错误，
-//      接收“停止抓包”指令，并在 dsh 重启或模块图变化时让侧栏刷新。
+//      接收“停止抓包”与“打开 UI”指令，并在 dsh 重启或模块图变化时刷新
+//      dsh UI 标签页。
 //   6. 远程 CDP 通道：injectable() 按标签页 URL 事先判定能不能注入脚本，
 //      判定为否的页面（非 http(s)——chrome:// / file: / 跨扩展页——以及
 //      Chrome 应用商店）读取和点击都只走 http://127.0.0.1:9222 的远程调试
 //      协议。这不是“注入失败后的回退”：普通 http(s) 页面即使注入失败也不会
 //      改走 CDP（https 上的 PDF 同样按普通页面处理）。
 //
-// 侧栏页面本身只嵌入 dsh 网页界面（外加一条状态栏）；本 worker 是扩展里
-// 唯一接触 Chrome API 的部分。
+// 侧栏页面只是状态栏 + 两个按钮：dsh 界面不嵌在里面，而是开在普通标签页里
+// （原因见 extension/src/sidepanel.js 顶部注释）。本 worker 是扩展里唯一接触
+// Chrome API 的部分。
 
 const DEFAULT_DSH_URL = "http://127.0.0.1:3080";
 
@@ -58,6 +60,7 @@ chrome.runtime.onConnect.addListener((port) => {
   port.onDisconnect.addListener(() => panelPorts.delete(port));
   port.onMessage.addListener((msg) => {
     if (msg.type === "capture-stop") stopActiveCapture().catch(reportError);
+    if (msg.type === "open-ui") openDshUi().catch(reportError);
   });
   broadcastStatus();
 });
@@ -70,14 +73,52 @@ function toPanel(msg) {
   }
 }
 
+// ---- dsh UI 标签页 ----
+
+// dsh 界面不能嵌在侧栏里（见 extension/src/sidepanel.js 顶部），改为开在顶层
+// 标签页——那是第一方上下文，SameSite=Strict 的会话 cookie 会正常携带。已经
+// 打开的标签页优先复用，不重复开。
+const isDshTab = (u) =>
+  typeof u === "string" && (u === dshUrl || u.startsWith(`${dshUrl}/`) || u.startsWith(`${dshUrl}?`));
+
+async function dshTabs() {
+  try {
+    return (await chrome.tabs.query({})).filter((t) => isDshTab(t.url) && t.id !== undefined);
+  } catch {
+    return [];
+  }
+}
+
+async function openDshUi() {
+  const [existing] = await dshTabs();
+  if (existing) {
+    await chrome.tabs.update(existing.id, { active: true });
+    if (existing.windowId !== undefined) {
+      await chrome.windows.update(existing.windowId, { focused: true }).catch(() => {});
+    }
+    return;
+  }
+  await chrome.tabs.create({ url: dshUrl });
+}
+
+// dsh 重启（桥接重连）或模块图变化（装了插件行）后，让已打开的 UI 标签页重新
+// 加载，免手动刷新。以前这里刷新的是侧栏内的 iframe。
+function reloadDshTab() {
+  dshTabs()
+    .then((tabs) => {
+      for (const t of tabs) chrome.tabs.reload(t.id).catch(() => {});
+    })
+    .catch(() => {});
+}
+
 function broadcastStatus() {
   const capturing = [...captures.values()].some((c) => c.attached);
   toPanel({
     type: "status",
     kind: ws ? "ok" : "warn",
     text: ws
-      ? (capturing ? "桥接已连接 · 正在抓包" : "桥接已连接")
-      : "桥接未连接 — dsh web 是否已启动？",
+      ? (capturing ? "Bridge connected · capturing" : "Bridge connected")
+      : "Bridge not connected — is dsh web running?",
     capturing,
   });
 }
@@ -112,10 +153,10 @@ function connectBridge() {
   sock.onopen = () => {
     wsRetry = 2000;
     broadcastStatus();
-    // dsh 重启后桥接重连 → 自动刷新侧栏里的 dsh 页面（自我恢复）
+    // dsh 重启后桥接重连 → 自动刷新 dsh UI 标签页（自我恢复）
     if (wasDown) {
       wasDown = false;
-      toPanel({ type: "reload-gui" });
+      reloadDshTab();
     }
     // 桥接恢复时补发一次当前页面。必须先清掉去重记录：dsh 侧在最后一个
     // socket 断开时就丢掉了 currentPage（见 host/bridge.js），所以哪怕页面
@@ -133,8 +174,8 @@ function connectBridge() {
     }
     if (msg.type === "action") handleAction(msg).catch((err) => sendResult(msg.id, false, null, errMsg(err)));
     if (msg.type === "graph-changed") {
-      // dsh 模块图变化（安装/移除插件行）→ 让侧栏自动刷新，免手动刷新页面
-      toPanel({ type: "reload-gui" });
+      // dsh 模块图变化（安装/移除插件行）→ 刷新 UI 标签页，免手动刷新
+      reloadDshTab();
       return;
     }
     if (msg.type === "pong") return;

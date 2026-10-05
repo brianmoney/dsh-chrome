@@ -5,8 +5,27 @@ All notable changes to `dsh-chrome` are documented here. This project follows
 
 ## Unreleased
 
-dsh 0.2 host-API compatibility. Both items were found on dsh 0.2.0-rc.2; one
-disabled a whole feature silently, the other failed the running turn outright.
+dsh 0.2 compatibility. All three items were found on dsh 0.2.0-rc.2: two fix
+host-API breakage (one disabled a whole feature silently, the other failed the
+running turn outright), and one works around a dsh cookie restriction the side
+panel cannot satisfy.
+
+### Changed
+
+- **The side panel no longer embeds the dsh web UI; it opens the UI in a tab.**
+  dsh issues its browser-session cookie `SameSite=Strict`
+  (`@deepseek-ai/dsh-client-connection`, `sessionCookie()`). The side panel is a
+  third-party context — a `chrome-extension://…` page embedding
+  `http://127.0.0.1:3080` — and Chrome withholds a `SameSite=Strict` cookie from
+  that frame's requests. The embedded UI therefore rendered but never
+  authenticated: its requests were refused and edits silently did not apply.
+  Selecting a model was the visible symptom — the list opened, the choice did
+  not stick. A top-level tab is first-party and carries the cookie normally, so
+  the panel now offers **Open dsh UI** (focusing an existing tab, else opening
+  one) and reloads that tab where it used to refresh the iframe.
+  Nothing else moves: the bridge, the current-page feed and the `browser_*`
+  tools live in the service worker and never depended on the panel. Reported
+  and diagnosed in upstream issue #6.
 
 ### Fixed
 

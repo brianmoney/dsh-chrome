@@ -1,20 +1,28 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>dsh-agent 设置</title>
+    <title>dsh-agent settings</title>
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
-    <h1>dsh-agent 设置</h1>
-    <label for="dshUrl">dsh 网页界面地址</label>
+    <h1>dsh-agent settings</h1>
+    <label for="dshUrl">dsh web UI address</label>
     <input id="dshUrl" type="text" placeholder="http://127.0.0.1:3080" />
-    <button id="save">保存</button>
+    <button id="save">Save</button>
     <span id="saved"></span>
     <p class="hint">
-      运行中的 <code>dsh web</code> 地址。侧栏从该地址嵌入完整界面，浏览器桥接连接到
-      <code>ws://该主机/dsh-agent/bridge</code>。如果你把 dsh 跑在别的端口，
-      或从局域网内另一台机器访问，改这里即可。
+      Address of the running <code>dsh web</code>. <strong>Open dsh UI</strong> opens this
+      address in a normal tab; the browser bridge connects to
+      <code>ws://that-host/dsh-agent/bridge</code>. Change it if dsh runs on another port,
+      or if you reach it from another machine on your LAN.
+    </p>
+    <p class="hint">
+      The UI is deliberately not embedded in the side panel. dsh's session cookie is
+      <code>SameSite=Strict</code>, and Chrome withholds it from a
+      <code>chrome-extension://</code> frame, so an embedded UI loads but can never
+      authenticate. If the tab asks you to authenticate, open the tokenized URL that
+      <code>dsh web</code> printed once — the session cookie persists after that.
     </p>
     <script type="module" src="options.js"></script>
   </body>

@@ -2,9 +2,9 @@
 
 English | [中文](README-zh.md)
 
-A Chrome side panel that embeds the **full dsh web UI** (sessions, settings,
-approvals, tasks, goals, workspaces — everything) and lets the dsh agent
-**perceive and drive your browser**:
+A Chrome companion that lets the dsh agent **perceive and drive your browser**,
+and opens the **full dsh web UI** (sessions, settings, approvals, tasks, goals,
+workspaces — everything) in a normal tab:
 
 - **Sees the current page automatically.** After you switch tabs or navigate
   (SPA routes included), the "current page" (URL, title, body text, capped at
@@ -81,9 +81,17 @@ deletes the extension directory (then remove it in `chrome://extensions`), and
 
 ## Usage
 
-- The side panel is the full dsh web UI — use it normally.
+- **Open dsh UI** opens the dsh web UI in a normal tab, or focuses the tab you
+  already have open. It is deliberately not embedded in the side panel: dsh
+  issues its session cookie `SameSite=Strict`, and Chrome withholds that cookie
+  from a `chrome-extension://` frame — so an embedded UI loads but can never
+  authenticate, its requests are refused, and your changes silently do not
+  apply. A top-level tab is first-party and carries the cookie normally.
 - Top bar: bridge status (warns if dsh is not running), **Stop capture**
   (manual override), **Settings** (change the dsh address).
+- The panel is a control surface only. Page perception, the browser tools and
+  the bridge run in the extension's service worker and do not depend on the
+  panel being open.
 - Tell the agent things like "open the xx page", "click the login button",
   "capture this page's requests".
 
@@ -155,10 +163,8 @@ agent the ability to read pages, capture traffic, and drive your browser.
 - Page pushes are deduplicated: a navigation whose URL and body length match
   the previous push sends nothing. The bridge reconnecting always re-sends,
   since dsh drops its cached page when the connection closes.
-- **The extension's own side-panel UI is currently Chinese only** (the top-bar
-  labels: bridge status, "stop capture", settings). The embedded dsh web UI
-  follows dsh's own locale; only this thin extension chrome is not yet
-  translated. Planned for a future release.
+- **The extension's own side-panel chrome is English** (bridge status, "Stop
+  capture", settings). The dsh web UI itself still follows dsh's own locale.
 - **Reading and clicking pages Chrome won't let extensions script** — `chrome-extension://`
   (another extension's options page), `chrome://`, `file://`, and the Chrome
   Web Store. The worker decides this **from the tab's URL before trying**, and

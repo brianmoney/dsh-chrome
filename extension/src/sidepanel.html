@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <title>dsh-agent</title>
@@ -9,10 +9,25 @@
     <header id="bar">
       <span id="title">dsh-agent</span>
       <span id="status" data-kind=""></span>
-      <button id="stopCapture" title="手动停止当前标签页的 HTTP 抓包">停止抓包</button>
-      <button id="settings" title="修改 dsh 网页界面地址">设置</button>
+      <button id="stopCapture" title="Stop capturing HTTP for the current tab">Stop capture</button>
+      <button id="settings" title="Change the dsh web UI address">Settings</button>
     </header>
-    <iframe id="dshFrame" src="about:blank" allow="clipboard-read; clipboard-write"></iframe>
+    <main id="body">
+      <button id="openUi">Open dsh UI</button>
+      <p class="hint">
+        The dsh web UI opens in a normal tab, not in this side panel. dsh issues its session
+        cookie <code>SameSite=Strict</code>, and Chrome withholds that cookie from a
+        <code>chrome-extension://</code> frame — so a UI embedded here would load but could
+        never authenticate: its requests would fail and nothing you changed would stick.
+        A first-party tab has no such restriction.
+      </p>
+      <p class="hint">
+        Everything else still works from here. The bridge, the current-page feed, and the
+        <code>browser_*</code> agent tools live in the extension's service worker and do not
+        depend on this panel.
+      </p>
+      <p class="hint" id="urlHint"></p>
+    </main>
     <script type="module" src="sidepanel.js"></script>
   </body>
 </html>

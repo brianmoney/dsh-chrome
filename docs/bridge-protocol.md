@@ -74,7 +74,8 @@ Chrome 扩展的 service worker 与 dsh 侧的桥接插件（`host/bridge.js`）
 
 ### `graph-changed`
 dsh 模块图变化（装/删插件行）时向所有已连接的扩展广播，无 `id`、无应答；
-扩展收到后刷新侧栏里内嵌的 dsh 页面。为避免刚启动就刷一次，启动后 5 秒内
+扩展收到后重新加载已打开的 dsh UI 标签页（`reloadDshTab()`；界面不再内嵌在
+侧栏里，见 `extension/src/sidepanel.js` 顶部）。为避免刚启动就刷一次，启动后 5 秒内
 的初始建图不广播。
 
 ```jsonc

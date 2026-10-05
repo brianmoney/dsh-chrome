@@ -56,9 +56,43 @@ body {
   border-color: #9e6a03;
 }
 
-#dshFrame {
+/* 面板不再嵌入 dsh 界面（见 sidepanel.js 顶部说明），这里只放按钮与说明。 */
+#body {
   flex: 1;
-  border: 0;
-  width: 100%;
-  background: #ffffff;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#openUi {
+  border: 1px solid #2f81f7;
+  background: #1f6feb;
+  color: #ffffff;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#openUi:hover {
+  background: #2f81f7;
+}
+
+.hint {
+  margin: 0;
+  color: #8b949e;
+}
+
+.hint code {
+  color: #e6edf3;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  padding: 0 3px;
+}
+
+#urlHint {
+  color: #6e7681;
 }
