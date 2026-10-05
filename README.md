@@ -2,9 +2,9 @@
 
 English | [中文](README-zh.md)
 
-A Chrome companion that lets the dsh agent **perceive and drive your browser**,
-and opens the **full dsh web UI** (sessions, settings, approvals, tasks, goals,
-workspaces — everything) in a normal tab:
+A Chrome side panel that embeds the **full dsh web UI** (sessions, settings,
+approvals, tasks, goals, workspaces — everything) and lets the dsh agent
+**perceive and drive your browser**:
 
 - **Sees the current page automatically.** After you switch tabs or navigate
   (SPA routes included), the "current page" (URL, title, body text, capped at
@@ -81,17 +81,18 @@ deletes the extension directory (then remove it in `chrome://extensions`), and
 
 ## Usage
 
-- **Open dsh UI** opens the dsh web UI in a normal tab, or focuses the tab you
-  already have open. It is deliberately not embedded in the side panel: dsh
-  issues its session cookie `SameSite=Strict`, and Chrome withholds that cookie
-  from a `chrome-extension://` frame — so an embedded UI loads but can never
-  authenticate, its requests are refused, and your changes silently do not
-  apply. A top-level tab is first-party and carries the cookie normally.
-- Top bar: bridge status (warns if dsh is not running), **Stop capture**
-  (manual override), **Settings** (change the dsh address).
-- The panel is a control surface only. Page perception, the browser tools and
-  the bridge run in the extension's service worker and do not depend on the
-  panel being open.
+- The side panel is the full dsh web UI — use it normally. Keeping the UI in the
+  panel rather than in a tab is deliberate, not cosmetic: every `browser_*` tool
+  acts on the **active tab**, so a UI that occupied a tab would itself be the
+  page the agent reads, and navigates, while you talk to it.
+- **Open in tab** opens the same UI in a normal tab (or focuses the one you
+  already have). Use it for the few things the panel cannot save: dsh mints its
+  session cookie `SameSite=Strict`, and Chrome withholds that cookie from a
+  `chrome-extension://` frame's WebSocket handshake — so socket-carried writes
+  such as choosing a model do not stick inside the panel. A top-level tab is
+  first-party and works.
+- Top bar: bridge status (warns if dsh is not running), **Open in tab**,
+  **Stop capture** (manual override), **Settings** (change the dsh address).
 - Tell the agent things like "open the xx page", "click the login button",
   "capture this page's requests".
 

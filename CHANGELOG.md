@@ -5,27 +5,33 @@ All notable changes to `dsh-chrome` are documented here. This project follows
 
 ## Unreleased
 
-dsh 0.2 compatibility. All three items were found on dsh 0.2.0-rc.2: two fix
-host-API breakage (one disabled a whole feature silently, the other failed the
-running turn outright), and one works around a dsh cookie restriction the side
-panel cannot satisfy.
+dsh 0.2 compatibility. All items were found on dsh 0.2.0-rc.2: two fix host-API
+breakage (one disabled a whole feature silently, the other failed the running
+turn outright), and one adds an escape hatch for a dsh cookie restriction the
+side panel cannot satisfy on its own.
+
+### Added
+
+- **Top-bar "Open in tab".** Opens the same dsh web UI in a first-party tab, or
+  focuses the one already open. It exists because dsh mints its browser-session
+  cookie `SameSite=Strict` (`@deepseek-ai/dsh-client-connection`,
+  `sessionCookie()`) and Chrome withholds that cookie from a
+  `chrome-extension://` frame's **WebSocket handshake** — so inside the panel the
+  UI renders, chat works, and reads work, but socket-carried writes do not
+  stick. Selecting a model is the visible symptom: the list opens and the choice
+  is discarded. A top-level tab is first-party and carries the cookie normally.
+  Reported and diagnosed in upstream issue #6.
 
 ### Changed
 
-- **The side panel no longer embeds the dsh web UI; it opens the UI in a tab.**
-  dsh issues its browser-session cookie `SameSite=Strict`
-  (`@deepseek-ai/dsh-client-connection`, `sessionCookie()`). The side panel is a
-  third-party context — a `chrome-extension://…` page embedding
-  `http://127.0.0.1:3080` — and Chrome withholds a `SameSite=Strict` cookie from
-  that frame's requests. The embedded UI therefore rendered but never
-  authenticated: its requests were refused and edits silently did not apply.
-  Selecting a model was the visible symptom — the list opened, the choice did
-  not stick. A top-level tab is first-party and carries the cookie normally, so
-  the panel now offers **Open dsh UI** (focusing an existing tab, else opening
-  one) and reloads that tab where it used to refresh the iframe.
-  Nothing else moves: the bridge, the current-page feed and the `browser_*`
-  tools live in the service worker and never depended on the panel. Reported
-  and diagnosed in upstream issue #6.
+- **The side panel still embeds the web UI.** An earlier attempt moved the UI
+  out of the panel and into a tab instead. That was reverted: every `browser_*`
+  tool acts on the **active tab**, so once the UI occupies a tab it is the page
+  the agent reads (`browser_get_page`, plus the auto-pushed "current page") and
+  navigates whenever the user is talking to it — browser work became
+  unusable-confusing. The panel's whole purpose is to keep the UI out of the tab
+  strip so the active tab stays the page the user is actually looking at.
+  `reload-gui` continues to refresh the embedded frame.
 
 ### Fixed
 
